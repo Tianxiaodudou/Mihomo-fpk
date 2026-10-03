@@ -28,7 +28,7 @@ MANIFEST = ROOT / "manifest"
 NOTES_MD = ROOT / "build" / "release_notes.md"
 
 # 纯内部/自动化提交不进更新日志
-NOISE_RE = re.compile(r"^(chore\(release\)|chore:|ci[:(]|build[:(]|Merge\b|Revert\b|Initial commit)", re.I)
+NOISE_RE = re.compile(r"^(chore\(release\)|Merge\b|Revert\b|Initial commit)", re.I)
 KIND_MAP = (
     ("feat", "新增"),
     ("fix", "修复"),
