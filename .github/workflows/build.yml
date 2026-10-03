@@ -60,6 +60,7 @@ jobs:
           if ! go test ./... -count=1 -v >"$log" 2>&1; then
             # 失败时把关键行塞进 GitHub 注解：注解在 run 页面公开可读，无需登录即可定位失败用例
             echo "::error title=GoTestFail::$(grep -E '^(--- FAIL|FAIL|ok )|_test\.go:[0-9]+:|no matching files|panic:' "$log" | head -40 | paste -sd'|' -)"
+            echo "::error title=GoTestLog::$(tail -n 40 "$log" | paste -sd'|' -)"
             echo "----- go test 输出（末尾 120 行）-----"
             tail -n 120 "$log"
             exit 1

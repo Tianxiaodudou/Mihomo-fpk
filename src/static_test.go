@@ -2,6 +2,7 @@ package main
 
 import (
 	"io/fs"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -25,16 +26,15 @@ func TestRewriteAssetBase(t *testing.T) {
 	if !strings.Contains(html, `"/app/MihomoProxy/assets/`) {
 		t.Fatalf("未生成带前缀的绝对资源路径: %s", html)
 	}
-	// 资源确实存在于嵌入文件系统
-	for _, line := range strings.Split(html, "\n") {
-		i := strings.Index(line, "/app/MihomoProxy/assets/")
-		if i < 0 {
-			continue
-		}
-		name := strings.Trim(strings.Fields(line[strings.Index(line, "/app/MihomoProxy/assets/"):])[0], `"'>\r`)
-		name = strings.TrimPrefix(name, "/app/MihomoProxy/")
-		if _, err := sub.Open(name); err != nil {
-			t.Errorf("资源在包内不存在: %s (%v)", name, err)
+	// 引用的资源必须真的存在于嵌入文件系统（否则线上会 404 → 黑屏）
+	assetRe := regexp.MustCompile(`/app/MihomoProxy/(assets/[^"'\s>)]+)`)
+	refs := assetRe.FindAllStringSubmatch(html, -1)
+	if len(refs) == 0 {
+		t.Errorf("index.html 中未找到任何 /app/MihomoProxy/assets/ 资源引用: %s", html)
+	}
+	for _, m := range refs {
+		if _, err := sub.Open(m[1]); err != nil {
+			t.Errorf("资源在包内不存在: %s (%v)", m[1], err)
 		}
 	}
 	// 前缀为空（本地根路径访问）时保持原样
