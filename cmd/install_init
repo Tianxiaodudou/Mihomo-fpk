@@ -1,0 +1,9 @@
+#!/bin/bash
+# 安装前：预创建应用数据目录并生成初始 config.yaml（Mihomo 内核仍保持关闭）
+set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
+APPDEST="${TRIM_APPDEST:-$(cd "$HERE/.." && pwd)}"
+PKGETC="${TRIM_PKGETC:-$APPDEST/etc}"
+PKGVAR="${TRIM_PKGVAR:-$APPDEST/var}"
+mkdir -p "$PKGETC" "$PKGVAR" "${TRIM_PKGTMP:-$APPDEST/tmp}" "${TRIM_PKGHOME:-$APPDEST/home}" 2>/dev/null || true
+exit 0

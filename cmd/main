@@ -1,0 +1,194 @@
+#!/bin/bash
+# ============================================================================
+#  MihomoProxy for 飞牛 fnOS —— 生命周期主控脚本
+#  用法: main start | stop | restart | status | diag
+#  说明:
+#    * start 只拉起 Go 管理后端（监听飞牛统一网关 Unix Socket）。
+#    * Mihomo 内核的启停由 Go 后端按「总开关」控制，本脚本不直接管理。
+#    * 所有路径来自 TRIM_* / FNNAS_* 环境变量，无硬编码安装路径。
+# ============================================================================
+set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+APPDEST="${TRIM_APPDEST:-$(cd "$HERE/.." && pwd)}"
+PKGETC="${TRIM_PKGETC:-$APPDEST/etc}"
+PKGVAR="${TRIM_PKGVAR:-$APPDEST/var}"
+PKGTMP="${TRIM_PKGTMP:-$APPDEST/tmp}"
+PKGHOME="${TRIM_PKGHOME:-$APPDEST/home}"
+
+APPNAME="MihomoProxy"
+WEB_PID_FILE="$PKGVAR/web.pid"
+MIHOMO_PID_FILE="$PKGVAR/mihomo.pid"
+MIHOMO_SOCK="$PKGVAR/mihomo.sock"
+WEB_LOG="$PKGVAR/web.log"
+CONFIG_FILE="$PKGETC/config.yaml"
+TEMPLATE_FILE="$APPDEST/etc/config.yaml.template"
+GW_SOCK="${FNNAS_GATEWAY_SOCKET:-$APPDEST/$APPNAME.sock}"
+
+log_msg() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$WEB_LOG" 2>/dev/null || true
+}
+
+fail() {
+    log_msg "ERROR: $1"
+    if [ -n "${TRIM_TEMP_LOGFILE:-}" ]; then
+        echo "$1" > "$TRIM_TEMP_LOGFILE"
+    fi
+    exit 1
+}
+
+detect_arch() {
+    case "$(uname -m)" in
+        x86_64 | amd64)     echo "x86_64"  ;;
+        aarch64 | arm64)    echo "aarch64" ;;
+        *)                  echo "" ;;
+    esac
+}
+
+pid_of() {
+    [ -f "$1" ] || return 1
+    local p
+    p="$(tr -dc '0-9' < "$1" 2>/dev/null)"
+    [ -n "$p" ] || return 1
+    printf '%s' "$p"
+}
+
+is_web_running() {
+    local p
+    p="$(pid_of "$WEB_PID_FILE")" || return 1
+    kill -0 "$p" 2>/dev/null
+}
+
+ensure_config() {
+    mkdir -p "$PKGETC" "$PKGVAR" "$PKGTMP" "$PKGHOME" 2>/dev/null || true
+    if [ ! -s "$CONFIG_FILE" ]; then
+        if [ ! -s "$TEMPLATE_FILE" ]; then
+            fail "缺少配置模板：$TEMPLATE_FILE"
+        fi
+        # 模板中的 __MIHOMO_SOCKET__ 占位符替换为实际 Unix Socket 路径
+        sed "s|__MIHOMO_SOCKET__|$MIHOMO_SOCK|g" "$TEMPLATE_FILE" > "$CONFIG_FILE.tmp" || fail "生成 config.yaml 失败"
+        chmod 600 "$CONFIG_FILE.tmp" 2>/dev/null || true
+        mv -f "$CONFIG_FILE.tmp" "$CONFIG_FILE" || fail "写入 config.yaml 失败"
+        log_msg "generated $CONFIG_FILE from template"
+    fi
+}
+
+start_web() {
+    local arch bin
+    if is_web_running; then
+        log_msg "web backend already running"
+        return 0
+    fi
+    arch="$(detect_arch)"
+    if [ -z "$arch" ]; then
+        fail "不支持的 CPU 架构：$(uname -m)（本包仅提供 x86_64 / aarch64）"
+    fi
+    bin="$APPDEST/bin/$arch/$APPNAME-web"
+    if [ ! -x "$bin" ]; then
+        chmod 755 "$bin" 2>/dev/null || true
+    fi
+    if [ ! -x "$bin" ]; then
+        fail "管理后端不存在或不可执行：$bin"
+    fi
+
+    ensure_config
+
+    rm -f "$WEB_PID_FILE"
+    rm -f "$GW_SOCK" 2>/dev/null || true
+    mkdir -p "$(dirname "$GW_SOCK")" 2>/dev/null || true
+
+    nohup "$bin" --socket "$GW_SOCK" >> "$WEB_LOG" 2>&1 &
+    local pid=$!
+    printf '%s' "$pid" > "$WEB_PID_FILE"
+
+    # 兼容：安装目录下同时挂 app.sock 软链接，便于网关 / 排障访问
+    ln -sf "$GW_SOCK" "$APPDEST/app.sock" 2>/dev/null || true
+
+    local i=0
+    while [ "$i" -lt 15 ]; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            rm -f "$WEB_PID_FILE"
+            fail "管理后端启动后立即退出，请查看日志：$WEB_LOG"
+        fi
+        if [ -S "$GW_SOCK" ]; then
+            log_msg "web backend started, pid=$pid, socket=$GW_SOCK"
+            return 0
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+
+    if kill -0 "$pid" 2>/dev/null; then
+        log_msg "web backend started (socket not yet visible), pid=$pid"
+        return 0
+    fi
+    rm -f "$WEB_PID_FILE"
+    fail "管理后端启动失败，请查看日志：$WEB_LOG"
+}
+
+stop_mihomo() {
+    local p
+    p="$(pid_of "$MIHOMO_PID_FILE")" || { rm -f "$MIHOMO_PID_FILE" "$MIHOMO_SOCK"; return 0; }
+    if kill -0 "$p" 2>/dev/null; then
+        kill -TERM "$p" 2>/dev/null || true
+        local i=0
+        while kill -0 "$p" 2>/dev/null && [ "$i" -lt 10 ]; do
+            sleep 1
+            i=$((i + 1))
+        done
+        if kill -0 "$p" 2>/dev/null; then
+            kill -KILL "$p" 2>/dev/null || true
+        fi
+        log_msg "mihomo stopped, pid=$p"
+    fi
+    rm -f "$MIHOMO_PID_FILE" "$MIHOMO_SOCK"
+}
+
+stop_web() {
+    local p
+    p="$(pid_of "$WEB_PID_FILE")" || { rm -f "$WEB_PID_FILE"; return 0; }
+    if kill -0 "$p" 2>/dev/null; then
+        kill -TERM "$p" 2>/dev/null || true
+        local i=0
+        while kill -0 "$p" 2>/dev/null && [ "$i" -lt 20 ]; do
+            sleep 1
+            i=$((i + 1))
+        done
+        if kill -0 "$p" 2>/dev/null; then
+            kill -KILL "$p" 2>/dev/null || true
+            sleep 1
+        fi
+        log_msg "web backend stopped, pid=$p"
+    fi
+    rm -f "$WEB_PID_FILE"
+}
+
+diag() {
+    echo "APPDEST=$APPDEST"
+    echo "PKGETC=$PKGETC"
+    echo "PKGVAR=$PKGVAR"
+    echo "GW_SOCK=$GW_SOCK"
+    echo "arch=$(uname -m)"
+    echo "web pid file: $(cat "$WEB_PID_FILE" 2>/dev/null || echo none)"
+    local wp
+    wp="$(pid_of "$WEB_PID_FILE" 2>/dev/null || true)"
+    if [ -n "$wp" ] && kill -0 "$wp" 2>/dev/null; then echo "web: running ($wp)"; else echo "web: stopped"; fi
+    local mp
+    mp="$(pid_of "$MIHOMO_PID_FILE" 2>/dev/null || true)"
+    if [ -n "$mp" ] && kill -0 "$mp" 2>/dev/null; then echo "mihomo: running ($mp)"; else echo "mihomo: stopped"; fi
+    echo "--- config.yaml (head) ---"
+    head -n 20 "$CONFIG_FILE" 2>/dev/null || echo "missing"
+    echo "--- web.log (tail) ---"
+    tail -n 40 "$WEB_LOG" 2>/dev/null || echo "missing"
+}
+
+ACTION="${1:-start}"
+case "$ACTION" in
+    start)   start_web ;;
+    stop)    stop_web; stop_mihomo ;;
+    restart) stop_web; stop_mihomo; start_web ;;
+    status)  if is_web_running; then exit 0; fi; exit 3 ;;
+    diag)    diag ;;
+    *)       echo "usage: main {start|stop|restart|status|diag}" >&2; exit 2 ;;
+esac
+exit $?

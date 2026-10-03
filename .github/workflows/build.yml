@@ -1,0 +1,79 @@
+name: Build FPK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fpk-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: ${{ !contains(github.event.head_commit.message || '', '[skip ci]') }}
+    runs-on: ubuntu-22.04
+    env:
+      MIHOMO_VERSION: v1.19.32
+    steps:
+      - name: 拉取源码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 递增版本号
+        id: ver
+        run: python3 tools/bump_version.py
+
+      - name: 构建 fpk（前端 + Go 双架构 + mihomo 内核 + 打包）
+        run: |
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+          python3 tools/build.py
+
+      - name: 校验与摘要
+        run: |
+          fpk=$(ls build/MihomoProxy_*.fpk | head -1)
+          echo "产物: $fpk  ($(du -h "$fpk" | cut -f1))"
+          sha256sum "$fpk" > build/SHA256SUMS.txt
+          cat build/SHA256SUMS.txt
+
+      - name: 提交版本号
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add manifest
+          if git diff --cached --quiet; then
+            echo "manifest 无变更"
+          else
+            git commit -m "chore(release): v${{ steps.ver.outputs.version }} [skip ci]"
+            git push
+          fi
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: 显式代理 v${{ steps.ver.outputs.version }}
+          generate_release_notes: true
+          body: |
+            显式代理（MihomoProxy）v${{ steps.ver.outputs.version }} 自动构建产物。
+
+            * 内容：fnOS 应用包，内置 mihomo 内核（${{ env.MIHOMO_VERSION }}）与 Web 控制台
+            * 架构：x86_64 / aarch64
+            * 安装：飞牛 fnOS → 应用中心 → 手动安装，选择下方的 .fpk 文件
+          files: |
+            build/MihomoProxy_*.fpk
+            build/SHA256SUMS.txt

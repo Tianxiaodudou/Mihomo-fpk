@@ -1,0 +1,3 @@
+# fpk 打包对行尾敏感：manifest 与 shell 脚本在源码里保持 CRLF/原本字节，
+# 由 tools/build.py 在组装 stage 目录时统一转成 LF，所以禁止 git 做行尾转换。
+* -text

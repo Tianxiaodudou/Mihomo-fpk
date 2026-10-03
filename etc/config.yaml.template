@@ -1,0 +1,7 @@
+mixed-port: 7890
+allow-lan: true
+bind-address: '*'
+mode: rule
+log-level: info
+external-controller-unix: "__MIHOMO_SOCKET__"
+secret: ""

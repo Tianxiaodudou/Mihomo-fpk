@@ -1,0 +1,10 @@
+#!/bin/bash
+### 升级完成后触发：由 fnOS 重新拉起服务，此处只保证配置模板存在
+set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
+APPDEST="${TRIM_APPDEST:-$(cd "$HERE/.." && pwd)}"
+PKGETC="${TRIM_PKGETC:-$APPDEST/etc}"
+if [ ! -s "$PKGETC/config.yaml" ] && [ -s "$APPDEST/etc/config.yaml.template" ]; then
+    sed "s|__MIHOMO_SOCKET__|${TRIM_PKGVAR:-$APPDEST/var}/mihomo.sock|g" "$APPDEST/etc/config.yaml.template" > "$PKGETC/config.yaml.tmp" 2>/dev/null && mv -f "$PKGETC/config.yaml.tmp" "$PKGETC/config.yaml"
+fi
+exit 0

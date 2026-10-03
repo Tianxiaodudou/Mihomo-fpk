@@ -1,0 +1,14 @@
+{
+    ".url": {
+        "MihomoProxy.Application": {
+            "title": "显式代理",
+            "icon": "images/icon_{0}.png",
+            "type": "iframe",
+            "protocol": "",
+            "gatewayPrefix": "/app/MihomoProxy",
+            "gatewaySocket": "app.sock",
+            "url": "/app/MihomoProxy",
+            "allUsers": false
+        }
+    }
+}

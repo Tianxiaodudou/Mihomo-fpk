@@ -1,0 +1,7 @@
+#!/bin/bash
+### 卸载前触发：停止管理后端与 Mihomo 内核
+set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
+APPDEST="${TRIM_APPDEST:-$(cd "$HERE/.." && pwd)}"
+if [ -x "$APPDEST/cmd/main" ]; then "$APPDEST/cmd/main" stop >/dev/null 2>&1 || true; fi
+exit 0

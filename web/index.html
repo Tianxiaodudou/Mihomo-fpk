@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>显式代理</title>
+  </head>
+  <body>
+    <div id="app"><div id="boot-fallback" style="padding:24px;font:14px/1.7 system-ui,-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:#666">界面加载中…</div></div>
+    <script type="module" src="/src/main.js"></script>
+    <script>
+      // 兜底诊断：若主脚本未能执行（例如资源 404），给出可见提示而不是一片黑屏。
+      window.addEventListener('load', function () {
+        setTimeout(function () {
+          var el = document.getElementById('app')
+          if (el && document.getElementById('boot-fallback')) {
+            el.innerHTML =
+              '<div style="padding:24px;font:14px/1.7 system-ui,-apple-system,\'PingFang SC\',\'Microsoft YaHei\',sans-serif;color:#c0392b">' +
+              '界面脚本加载失败。请刷新页面；若仍失败，请按 F12 查看控制台/网络中的 404 资源并反馈。</div>'
+          }
+        }, 3000)
+      })
+    </script>
+  </body>
+</html>

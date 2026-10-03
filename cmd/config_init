@@ -1,0 +1,6 @@
+#!/bin/bash
+### 应用设置页修改变量前触发
+set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
+APPDEST="${TRIM_APPDEST:-$(cd "$HERE/.." && pwd)}"
+exit 0

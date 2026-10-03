@@ -1,0 +1,6 @@
+#!/bin/bash
+### 安装完成后触发：无需额外动作（Mihomo 总开关默认关闭）
+set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
+APPDEST="${TRIM_APPDEST:-$(cd "$HERE/.." && pwd)}"
+exit 0

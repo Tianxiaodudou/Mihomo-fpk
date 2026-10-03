@@ -1,0 +1,17 @@
+# 构建产物
+build/
+*.fpk
+
+# Go 后端 embed 的前端产物（由 npm run build 生成）
+src/static/
+
+# 交叉编译出的内核与后端二进制
+app/bin/
+
+# 前端依赖
+web/node_modules/
+
+# 临时文件
+__pycache__/
+*.pyc
+.DS_Store
