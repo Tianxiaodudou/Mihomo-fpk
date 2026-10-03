@@ -221,13 +221,22 @@ func sanitizeUserRules(rules []string) ([]string, int) {
 
 // SanitizeRules 组装最终规则表，顺序固定为：
 //
-//	内网直连（保留地址/lancidr/private）→ 订阅自带规则 → 内置国内直连（direct/cncidr）→ MATCH,<订阅主策略组>
+//	内网直连（保留地址/lancidr/private）→ 强制代理（gfw：被墙域名）
+//	→ 内置国内直连（direct/cncidr；苹果/微软等国内可直连的域名保持直连）
+//	→ 订阅自带规则 → MATCH,<订阅主策略组>
 //
 // 订阅里被丢弃的 GEOIP,CN / GEOSITE,cn 等条目由内置的 direct + cncidr 规则集等价顶替，
 // 这样既不依赖联网下载地理数据，也不会出现“国内流量全部走代理”的兜底行为。
+//
+// gfw 放在国内直连之前：个别被墙站点（或其 CDN 落在国内 IP）的域名会同时出现在
+// direct 表里，先命中强制代理可避免被误判为直连、导致连接被重置。
+// 订阅自带规则放在内置直连之后：避免订阅里过宽/过时的规则破坏国内直连判定。
 func SanitizeRules(rules []string, exit string) ([]string, []string) {
 	user, _ := sanitizeUserRules(rules)
 	notices := []string{}
+	if exit == "" {
+		exit = "PROXY"
+	}
 	final := []string{}
 	seen := map[string]bool{}
 	push := func(rs []string) {
@@ -240,11 +249,9 @@ func SanitizeRules(rules []string, exit string) ([]string, []string) {
 		}
 	}
 	push(lanDirectRules())
-	push(user)
+	push(gfwProxyRules(exit))
 	push(cnDirectRules())
-	if exit == "" {
-		exit = "PROXY"
-	}
+	push(user)
 	push([]string{"MATCH," + exit})
 	return final, notices
 }

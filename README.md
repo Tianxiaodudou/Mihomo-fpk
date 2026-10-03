@@ -5,7 +5,7 @@
 * 单文件安装包（`.fpk`），仅需一个网关端口即可使用；
 * Web 控制台：订阅管理、节点/策略组切换、测速、延迟徽标、配置保存；
 * Go 后端把 mihomo 内核（RESTful API + 工作目录）托管为 fnOS 应用的网关服务；
-* 内置直连/私有/局域网/CN CIDR 规则集（编译进二进制，无外网依赖）。
+* 内置直连/私有/局域网/CN CIDR/被墙域名规则集（编译进二进制，无外网依赖），**构建时自动更新到最新**。
 
 ## 目录结构
 
@@ -20,13 +20,39 @@
 | `etc/` | `config.yaml.template` 模板源文件 |
 | `tools/` | 构建与打包脚本（纯 Python 标准库） |
 
+## 分流策略（规则优先级）
+
+最终写进内核的 `rules` 顺序固定如下（由 `src/merge.go` 的 `SanitizeRules` 组装，`src/rules_test.go` 锁定）：
+
+| # | 规则 | 去向 | 说明 |
+| --- | --- | --- | --- |
+| 1 | `IP-CIDR` 保留地址 + `RULE-SET,lancidr` + `RULE-SET,private` | DIRECT | 内网/NAS/路由器直连，永远最前 |
+| 2 | `RULE-SET,gfw` | 订阅主策略组 | 被墙域名强制走代理（含 CDN 落在国内 IP 的站点），**先于直连表匹配** |
+| 3 | `RULE-SET,direct` + `RULE-SET,cncidr` | DIRECT | 国内域名 / 国内 IP 直连（苹果、微软等国内可直连的域名保持直连） |
+| 4 | 订阅自带规则（清洗后） | 按订阅 | 放在内置判定之后，避免订阅里过宽/过时的规则破坏国内直连 |
+| 5 | `MATCH,<订阅主策略组>` | 订阅主策略组 | 剩余流量（主要是境外）走节点 |
+
+订阅里依赖地理数据的 `GEOIP,CN` / `GEOSITE,cn` 等条目会被丢弃，由内置 `direct` + `cncidr` 等价顶替
+（内核未内嵌 geodata，离线时无法解析这类规则）。
+
 ## 本地构建
 
 依赖：Python 3.8+、Go 1.22+、Node.js 18+。
 
 ```bash
-python tools/build.py            # 全流程：web -> go -> mihomo -> icons -> stage -> pack
+python tools/build.py            # 全流程：web -> rules -> go -> mihomo -> icons -> stage -> pack
 python tools/build.py web go     # 只跑指定步骤
+python tools/build.py rules      # 只更新内置分流规则
+```
+
+`rules` 步骤会从 [Loyalsoldier/clash-rules](https://github.com/Loyalsoldier/clash-rules)（`release` 分支）
+拉取最新 `direct/private/lancidr/cncidr/gfw` 到 `src/rules/`，由 `go:embed` 打进二进制；
+**拉取失败不中断构建**，沿用仓内快照，保证离线可构建、安装后离线可用。
+
+Go 单元测试（需 Linux，源码依赖 Linux syscall；Windows 下请用 `GOOS=linux` 交叉编译）：
+
+```bash
+cd src && go test ./... -count=1
 ```
 
 产物：`build/MihomoProxy_<版本>.fpk`。

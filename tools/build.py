@@ -83,6 +83,40 @@ def build_web():
 # --------------------------------------------------------------------------
 # 2. Go 后端（linux/amd64 + linux/arm64，静态链接）
 # --------------------------------------------------------------------------
+RULES_FILES = ("direct.txt", "private.txt", "lancidr.txt", "cncidr.txt", "gfw.txt")
+RULES_URL = "https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/{f}"
+
+
+def build_rules():
+    """拉取上游最新分流规则到 src/rules/（Go 构建时用 go:embed 打进二进制）。
+
+    失败/超时不会中断构建：沿用仓内快照，保证离线可构建、安装后离线可用。
+    """
+    log("更新内置分流规则（Loyalsoldier/clash-rules release 分支）")
+    dst_dir = os.path.join(SRC, "rules")
+    os.makedirs(dst_dir, exist_ok=True)
+    for name in RULES_FILES:
+        dst = os.path.join(dst_dir, name)
+        try:
+            req = urllib.request.Request(RULES_URL.format(f=name),
+                                        headers={"User-Agent": "MihomoProxy-build"})
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = resp.read()
+            if not data.startswith(b"payload:") or len(data) < 200:
+                raise ValueError("返回内容不是合法 rule-provider（%d 字节）" % len(data))
+            old = open(dst, "rb").read() if os.path.isfile(dst) else b""
+            if old == data:
+                log("  %-12s 已是最新（%d 条）" % (name, data.count(b"\n") - 1))
+                continue
+            with open(dst, "wb") as f:
+                f.write(data)
+            log("  %-12s 更新（%d 条，%.0f KB）" % (name, data.count(b"\n") - 1, len(data) / 1024.0))
+        except Exception as e:  # 网络问题不阻塞构建
+            have = os.path.isfile(dst)
+            log("  %-12s 拉取失败（%s）：%s" % (name, e, "沿用仓内快照" if have else "且无快照，构建可能缺规则！"))
+    return None
+
+
 def build_go():
     log("构建 Go 后端 ...")
     go = _exe("go")
@@ -198,8 +232,8 @@ def pack():
     return out
 
 
-STEPS = [("web", build_web), ("go", build_go), ("mihomo", build_mihomo),
-         ("icons", build_icons), ("stage", stage), ("pack", pack)]
+STEPS = [("web", build_web), ("rules", build_rules), ("go", build_go),
+         ("mihomo", build_mihomo), ("icons", build_icons), ("stage", stage), ("pack", pack)]
 
 
 def main():

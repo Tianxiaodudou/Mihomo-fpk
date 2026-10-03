@@ -7,8 +7,9 @@ import (
 )
 
 // 内置离线分流规则集（Clash rule-provider 格式，yaml）。
-// 来源：Loyalsoldier/clash-rules release 分支（direct/private/lancidr/cncidr），
+// 来源：Loyalsoldier/clash-rules release 分支（direct/private/lancidr/cncidr/gfw），
 // 打包进二进制，运行期释放到 <var>/rules/，让内核在完全离线时也能分流。
+// 构建时由 tools/build.py 的 rules 步骤拉取上游最新版本，失败则沿用仓内快照。
 //
 //go:embed rules/*.txt
 var ruleFS embed.FS
@@ -22,6 +23,7 @@ type ruleProviderDef struct {
 var ruleProviderDefs = []ruleProviderDef{
 	{Name: "private", File: "rules/private.txt", Behavior: "domain"},
 	{Name: "direct", File: "rules/direct.txt", Behavior: "domain"},
+	{Name: "gfw", File: "rules/gfw.txt", Behavior: "domain"},
 	{Name: "lancidr", File: "rules/lancidr.txt", Behavior: "ipcidr"},
 	{Name: "cncidr", File: "rules/cncidr.txt", Behavior: "ipcidr"},
 }
@@ -83,4 +85,12 @@ func cnDirectRules() []string {
 		"RULE-SET,direct,DIRECT",
 		"RULE-SET,cncidr,DIRECT,no-resolve",
 	}
+}
+
+// gfwProxyRules 被墙域名强制走代理，排在 cnDirectRules 之前。
+// 理由：少数被墙站点（或其 CDN 落在国内 IP）的域名会同时出现在 direct 表里，
+// 先命中本组可避免被误判为直连而连接重置；苹果/微软等国内可直连的域名不在本表内，
+// 仍由 direct 规则保持直连。
+func gfwProxyRules(exit string) []string {
+	return []string{"RULE-SET,gfw," + exit}
 }

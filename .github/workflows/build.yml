@@ -30,6 +30,10 @@ jobs:
           go-version: '1.22'
           cache-dependency-path: src/go.sum
 
+      - name: Go 单元测试（分流规则顺序 / 内置规则集注册）
+        working-directory: src
+        run: go test ./... -count=1
+
       - name: 安装 Node
         uses: actions/setup-node@v4
         with:
