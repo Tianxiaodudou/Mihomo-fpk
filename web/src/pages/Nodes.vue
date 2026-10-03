@@ -148,8 +148,24 @@ async function saveProbe() {
   }
 }
 
-async function testNode(name) {
+
+// 测速前先确认内核在运行：内核停止时所有延迟必然超时，测了没有意义
+async function ensureKernel() {
+  let ok = false
+  try {
+    const st = await api.get('/api/status')
+    status.value = st
+    ok = !!st.running
+  } catch (e) {
+    ok = !!status.value.running
+  }
+  if (!ok) notify('内核未运行，请先到「概览」页打开总开关启动内核，再测速', true)
+  return ok
+}
+
+async function testNode(name, noCheck) {
   if (!name || pending.value[name]) return -1
+  if (!noCheck && !(await ensureKernel())) return -1
   pending.value = { ...pending.value, [name]: true }
   let d = -1
   try {
@@ -171,6 +187,7 @@ async function testNode(name) {
 async function runPool(names, label) {
   const list = [...new Set(names)].filter((n) => n && !groupNames.value.includes(n))
   if (!list.length) return notify('没有可测速的节点', true)
+  if (!(await ensureKernel())) return
   testing.value = true
   let done = 0
   progress.value = label + ' 0/' + list.length
@@ -178,7 +195,7 @@ async function runPool(names, label) {
   const worker = async () => {
     while (idx < list.length) {
       const n = list[idx++]
-      await testNode(n)
+      await testNode(n, true)
       done += 1
       progress.value = label + ' ' + done + '/' + list.length
     }
@@ -205,8 +222,10 @@ function testAll() {
   if (testing.value) return
   runPool(nodes.value.map((n) => n.name), '全部测速')
 }
-function testCurrent() {
-  if (current.value) testNode(current.value)
+async function testCurrent() {
+  if (!(await ensureKernel())) return
+  if (!current.value) return notify('还没有生效节点，请先导入订阅并启动内核', true)
+  testNode(current.value, true)
 }
 
 // 点节点 = 让「这个策略组」使用该节点（内核里就是该组的 now 切到它）
@@ -263,7 +282,7 @@ onMounted(async () => {
       <span class="muted">当前出口</span>
       <span class="badge on">{{ chainText }}</span>
       <span class="badge" :class="delayClass(current)">{{ delayOf(current) }}</span>
-      <button class="mini" :disabled="testing || !running || !current" @click="testCurrent">
+      <button class="mini" :disabled="testing" @click="testCurrent">
         {{ pending[current] ? '测速中…' : '测速' }}
       </button>
       <span v-if="!running" class="muted">（内核未运行，节点列表为配置文件中的静态数据）</span>

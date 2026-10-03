@@ -31,8 +31,24 @@ async function loadProxies() {
   }
 }
 
+// 测速前先确认内核在运行：内核停止时所有延迟必然超时，测了没有意义
+async function ensureKernel() {
+  let ok = false
+  try {
+    const st = await api.get('/api/status')
+    status.value = st
+    ok = !!st.running
+  } catch (e) {
+    ok = !!status.value.running
+  }
+  if (!ok) notify('内核未运行，请先点本页总开关启动内核，再测速', true)
+  return ok
+}
+
 async function testCurrent() {
-  if (testing.value || !currentNode.value) return
+  if (testing.value) return
+  if (!(await ensureKernel())) return
+  if (!currentNode.value) return notify('还没有生效节点，请先导入订阅并启动内核', true)
   testing.value = true
   try {
     const r = await api.raw(
@@ -58,8 +74,10 @@ const siteList = [
 const siteResult = ref({})
 const testingSite = ref('')
 
-async function testSite(site) {
-  if (!status.value.running || !currentNode.value || testingSite.value) return
+async function testSite(site, noCheck) {
+  if (testingSite.value) return
+  if (!noCheck && !(await ensureKernel())) return
+  if (!currentNode.value) return notify('还没有生效节点，请先导入订阅并启动内核', true)
   testingSite.value = site.id
   try {
     const r = await api.raw(
@@ -81,9 +99,11 @@ async function testSite(site) {
 }
 
 async function testSites() {
+  if (!(await ensureKernel())) return
+  if (!currentNode.value) return notify('还没有生效节点，请先导入订阅并启动内核', true)
   for (const site of siteList) {
-    if (!status.value.running || !currentNode.value) break
-    await testSite(site)
+    if (!currentNode.value) break
+    await testSite(site, true)
   }
 }
 
@@ -229,7 +249,7 @@ function fmtTime(ts) {
       <h2 style="margin:0">当前节点</h2>
       <div class="row">
         <span class="badge" :class="delayClass(nodeDelay)">{{ fmtDelay(nodeDelay) }}</span>
-        <button :disabled="testing || !status.running || !currentNode" @click="testCurrent">
+        <button :disabled="testing" @click="testCurrent">
           {{ testing ? '测速中…' : '测速' }}
         </button>
         <button @click="emit('goto', 'nodes')">切换节点</button>
@@ -248,14 +268,14 @@ function fmtTime(ts) {
   <div class="card">
     <div class="row between">
       <h2 style="margin:0">网络测试 <small>经当前生效节点访问下列站点</small></h2>
-      <button :disabled="!!testingSite || !status.running || !currentNode" @click="testSites">全部测试</button>
+      <button :disabled="!!testingSite" @click="testSites">全部测试</button>
     </div>
     <div class="stat-grid" style="margin-top:8px">
       <div v-for="site in siteList" :key="site.id" class="stat">
         <div class="k">{{ site.label }}</div>
         <div class="v"><span class="badge" :class="delayClass(siteResult[site.id])">{{ fmtDelay(siteResult[site.id]) }}</span></div>
         <div class="row" style="margin-top:8px">
-          <button class="sm" :disabled="!!testingSite || !status.running || !currentNode" @click="testSite(site)">
+          <button class="sm" :disabled="!!testingSite" @click="testSite(site)">
             {{ testingSite === site.id ? '测试中…' : '测试' }}
           </button>
         </div>
