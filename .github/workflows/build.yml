@@ -30,10 +30,6 @@ jobs:
           go-version: '1.22'
           cache-dependency-path: src/go.sum
 
-      - name: Go 单元测试（分流规则顺序 / 内置规则集注册）
-        working-directory: src
-        run: go test ./... -count=1
-
       - name: 安装 Node
         uses: actions/setup-node@v4
         with:
@@ -54,6 +50,12 @@ jobs:
           echo "产物: $fpk  ($(du -h "$fpk" | cut -f1))"
           sha256sum "$fpk" > build/SHA256SUMS.txt
           cat build/SHA256SUMS.txt
+
+      # 测试必须放在构建之后：go:embed all:static 依赖 npm 产出的 src/static，
+      # static_test.go 还会校验 index.html 里的资源真在嵌入文件系统内。
+      - name: Go 单元测试（分流规则顺序 / 静态资源嵌入）
+        working-directory: src
+        run: go test ./... -count=1
 
       - name: 提交版本号
         run: |
