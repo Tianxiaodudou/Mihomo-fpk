@@ -48,8 +48,9 @@
 从上游 `Loyalsoldier/clash-rules` 的 release 分支下载 gfw / direct / cncidr / lancidr / private 五个规则集，
 写入 `<var>/rules/`，随后自动重建配置并重载内核，**无需升级应用**（升级应用也不会覆盖手动更新过的规则）。
 
-下载会按顺序尝试多个镜像（raw.githubusercontent → jsdelivr → ghfast → gitmirror），
-直连全部失败时再走本机代理端口重试；任一规则集拉取失败则整体不落盘，保证原有规则始终可用。
+下载会按顺序尝试多个镜像（jsdelivr → ghfast.top → ghproxy.net → raw.githubusercontent），
+每个镜像失败后会重试一轮，直连全部失败时再走本机代理端口重试；五个规则集并行拉取以缩短等待。
+任一规则集拉取失败则整体不落盘（提示里会列出各镜像的失败原因），保证原有规则始终可用。
 
 对应接口：`GET /api/rules`（当前规则版本与条数）、`POST /api/rules/update`（手动更新）。
 

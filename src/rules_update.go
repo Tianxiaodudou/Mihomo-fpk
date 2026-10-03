@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -17,11 +19,18 @@ import (
 const rulesUpstreamRepo = "Loyalsoldier/clash-rules"
 
 var rulesMirrors = []string{
-	"https://raw.githubusercontent.com/" + rulesUpstreamRepo + "/release/%s",
 	"https://cdn.jsdelivr.net/gh/" + rulesUpstreamRepo + "@release/%s",
 	"https://ghfast.top/https://raw.githubusercontent.com/" + rulesUpstreamRepo + "/release/%s",
-	"https://raw.gitmirror.com/" + rulesUpstreamRepo + "/release/%s",
+	"https://ghproxy.net/https://raw.githubusercontent.com/" + rulesUpstreamRepo + "/release/%s",
+	"https://raw.githubusercontent.com/" + rulesUpstreamRepo + "/release/%s",
 }
+
+// 下载参数：单次请求超时 / 整轮预算 / 每个镜像的重试轮数。
+const (
+	rulesAttemptTimeout = 25 * time.Second
+	rulesTotalBudget    = 150 * time.Second
+	rulesAttemptPasses  = 2
+)
 
 // rulesBuiltAt 由构建时注入（tools/build.py 的 -ldflags -X main.rulesBuiltAt=YYYY-MM-DD），
 // 表示二进制里内置规则快照的日期，作为「规则版本」在未手动更新时的取值。
@@ -138,42 +147,105 @@ func hostOf(raw string) string {
 	return raw
 }
 
-// fetchRule 依镜像顺序尝试下载一个规则集，返回首个合法响应。
-func fetchRule(client *http.Client, fname string) ([]byte, error) {
-	var lastErr error
+// shortErr 把网络错误压成「主机名: 简短原因」，便于直接在设置页展示。
+func shortErr(u string, err error) string {
+	msg := err.Error()
+	msg = strings.ReplaceAll(msg, "Get \""+u+"\": ", "")
+	if strings.Contains(msg, "Client.Timeout") || strings.Contains(msg, "context deadline exceeded") {
+		msg = "超时"
+	}
+	if len(msg) > 80 {
+		msg = msg[:80] + "…"
+	}
+	return hostOf(u) + ": " + msg
+}
+
+// dedupe 去重并限制条数，避免错误信息过长。
+func dedupe(msgs []string, limit int) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, m := range msgs {
+		if seen[m] {
+			continue
+		}
+		seen[m] = true
+		out = append(out, m)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+// fetchRuleOnce 依镜像顺序尝试一轮，返回首个合法响应；
+// 全部失败时返回每个镜像的错误摘要（而不是只有最后一个），便于定位真正原因。
+func fetchRuleOnce(client *http.Client, fname string, budget time.Time) ([]byte, []string) {
+	var errs []string
 	for _, tpl := range rulesMirrors {
+		if time.Now().After(budget) {
+			errs = append(errs, "已超出本轮更新时限")
+			break
+		}
 		u := fmt.Sprintf(tpl, fname)
 		req, err := http.NewRequest("GET", u, nil)
 		if err != nil {
-			lastErr = err
+			errs = append(errs, hostOf(u)+": "+err.Error())
 			continue
 		}
 		req.Header.Set("User-Agent", "MihomoProxy-rules")
-		resp, err := client.Do(req)
+		ctx, cancel := context.WithTimeout(context.Background(), rulesAttemptTimeout)
+		resp, err := client.Do(req.WithContext(ctx))
 		if err != nil {
-			lastErr = err
+			cancel()
+			errs = append(errs, shortErr(u, err))
 			continue
 		}
-		b, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+		b, rerr := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 		resp.Body.Close()
-		if err != nil {
-			lastErr = err
+		cancel()
+		if rerr != nil {
+			errs = append(errs, hostOf(u)+": "+rerr.Error())
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {
-			lastErr = fmt.Errorf("%s HTTP %d", hostOf(u), resp.StatusCode)
+			errs = append(errs, fmt.Sprintf("%s: HTTP %d", hostOf(u), resp.StatusCode))
 			continue
 		}
 		if !strings.HasPrefix(strings.TrimSpace(string(b)), "payload:") || len(b) < 200 {
-			lastErr = fmt.Errorf("%s 返回的不是合法规则集（%d 字节）", hostOf(u), len(b))
+			errs = append(errs, fmt.Sprintf("%s: 返回的不是合法规则集（%d 字节）", hostOf(u), len(b)))
 			continue
 		}
 		return b, nil
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("没有可用的下载地址")
+	return nil, errs
+}
+
+// fetchRule 先用直连客户端多轮尝试，再走本机代理多轮尝试（应用本身就是代理，GitHub 通常可达）。
+func fetchRule(fname string, clients []*http.Client, budget time.Time) ([]byte, error) {
+	var errs []string
+	for _, cl := range clients {
+		if cl == nil {
+			continue
+		}
+		for pass := 0; pass < rulesAttemptPasses; pass++ {
+			if time.Now().After(budget) {
+				break
+			}
+			b, es := fetchRuleOnce(cl, fname, budget)
+			if b != nil {
+				return b, nil
+			}
+			errs = append(errs, es...)
+		}
 	}
-	return nil, lastErr
+	if len(errs) == 0 {
+		errs = []string{"没有可用的下载地址"}
+	}
+	msg := strings.Join(dedupe(errs, 6), "；")
+	if len(msg) > 240 {
+		msg = msg[:240] + "…"
+	}
+	return nil, fmt.Errorf("%s", msg)
 }
 
 // proxyClient 直连失败时改走本机代理（应用本身就是代理，github 通常可达）。
@@ -198,23 +270,34 @@ func UpdateRules(varDir, proxyAddr string) (*RulesMeta, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	client := &http.Client{Timeout: 60 * time.Second}
-	pc := proxyClient(proxyAddr)
+	// 直连多镜像 + 本机代理兜底；5 个规则集彼此独立，并行拉取缩短等待。
+	clients := []*http.Client{{Timeout: 30 * time.Second}, proxyClient(proxyAddr)}
+	budget := time.Now().Add(rulesTotalBudget)
+
+	type fetchResult struct {
+		b   []byte
+		err error
+	}
+	results := make([]fetchResult, len(ruleProviderDefs))
+	var wg sync.WaitGroup
+	for i, rp := range ruleProviderDefs {
+		wg.Add(1)
+		go func(i int, name string) {
+			defer wg.Done()
+			b, err := fetchRule(name+".txt", clients, budget)
+			results[i] = fetchResult{b, err}
+		}(i, rp.Name)
+	}
+	wg.Wait()
 
 	fetched := map[string][]byte{}
 	var failed []string
-	for _, rp := range ruleProviderDefs {
-		b, err := fetchRule(client, rp.Name+".txt")
-		if err != nil && pc != nil {
-			if b2, err2 := fetchRule(pc, rp.Name+".txt"); err2 == nil {
-				b, err = b2, nil
-			}
-		}
-		if err != nil {
-			failed = append(failed, fmt.Sprintf("%s(%v)", rp.Name, err))
+	for i, rp := range ruleProviderDefs {
+		if results[i].err != nil {
+			failed = append(failed, fmt.Sprintf("%s(%v)", rp.Name, results[i].err))
 			continue
 		}
-		fetched[rp.Name] = b
+		fetched[rp.Name] = results[i].b
 	}
 	if len(failed) > 0 {
 		return nil, fmt.Errorf("规则集下载失败：%s", strings.Join(failed, "；"))
