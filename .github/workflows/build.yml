@@ -67,11 +67,14 @@ jobs:
           fi
           tail -n 5 "$log"
 
+      - name: 生成更新日志（Release 说明 + manifest.changelog）
+        run: python3 tools/release_notes.py --version "${{ steps.ver.outputs.version }}"
+
       - name: 提交版本号
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add manifest
+          git add manifest CHANGELOG.md
           if git diff --cached --quiet; then
             echo "manifest 无变更"
           else
@@ -84,13 +87,7 @@ jobs:
         with:
           tag_name: v${{ steps.ver.outputs.version }}
           name: 显式代理 v${{ steps.ver.outputs.version }}
-          generate_release_notes: true
-          body: |
-            显式代理（MihomoProxy）v${{ steps.ver.outputs.version }} 自动构建产物。
-
-            * 内容：fnOS 应用包，内置 mihomo 内核（${{ env.MIHOMO_VERSION }}）与 Web 控制台
-            * 架构：x86_64 / aarch64
-            * 安装：飞牛 fnOS → 应用中心 → 手动安装，选择下方的 .fpk 文件
+          body_path: build/release_notes.md
           files: |
             build/MihomoProxy_*.fpk
             build/SHA256SUMS.txt
