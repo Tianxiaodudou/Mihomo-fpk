@@ -8,17 +8,26 @@ export async function setTitle(title) {
   try { if (trim) await trim.setTitle(title) } catch (e) {}
 }
 
-// 返回 { path } 或 { content }
+// 宿主内只用飞牛自带的文件选择器（NAS 上的文件）：
+//   - 选中 → { path }（NAS 绝对路径，交给后端读取）
+//   - 取消 → null（**不再回退到浏览器原生 input**，避免弹出电脑端的文件对话框）
+// 只有在宿主 SDK 不可用（例如浏览器直接打开调试）时，才回退到 input + FileReader。
+const HOST_PICKER = !!(trim && typeof trim.pickFile === 'function')
+
+export function hasHostPicker() {
+  return HOST_PICKER
+}
+
+// 返回 { path } | { content } | null(用户取消)
 export async function pickSubscriptionFile() {
-  if (trim && typeof trim.pickFile === 'function') {
-    try {
-      const files = await trim.pickFile({
-        multiple: false,
-        accept: ['.yaml', '.yml', '.txt', '.conf', '.json', '.list', '.ini', '.base64'],
-        title: '选择订阅文件'
-      })
-      if (files && files.length) return { path: files[0] }
-    } catch (e) { /* 宿主不支持时回退 */ }
+  if (HOST_PICKER) {
+    const files = await trim.pickFile({
+      multiple: false,
+      accept: ['.yaml', '.yml', '.txt', '.conf', '.json', '.list', '.ini', '.base64'],
+      title: '选择订阅文件'
+    })
+    if (files && files.length) return { path: files[0] }
+    return null
   }
   return pickByInput()
 }
