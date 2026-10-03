@@ -28,6 +28,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+          cache-dependency-path: src/go.sum
 
       - name: 安装 Node
         uses: actions/setup-node@v4
