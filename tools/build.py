@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -126,7 +127,10 @@ def build_go():
         env = dict(os.environ)
         env.update({"GOOS": "linux", "GOARCH": arch, "CGO_ENABLED": "0", "GOPROXY": GOPROXY})
         env.setdefault("GOTOOLCHAIN", "local")
-        run([go, "build", "-trimpath", "-ldflags", "-s -w",
+        # 版本号与规则快照日期注入二进制（设置页展示用），避免源码里再手改版本
+        ldflags = "-s -w -X main.appVersion=%s -X main.rulesBuiltAt=%s" % (
+            manifest_version(), time.strftime("%Y-%m-%d", time.gmtime(int(os.environ.get("SOURCE_DATE_EPOCH") or time.time()))))
+        run([go, "build", "-trimpath", "-ldflags", ldflags,
              "-o", os.path.join(outdir, "MihomoProxy-web"), "."], cwd=SRC, env=env)
         log("  linux/%s -> app/bin/%s/MihomoProxy-web" % (arch, dirname))
 

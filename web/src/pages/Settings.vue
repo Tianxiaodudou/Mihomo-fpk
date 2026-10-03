@@ -1,5 +1,5 @@
 <script setup>
-import { ref, inject, onMounted } from 'vue'
+import { ref, computed, inject, onMounted } from 'vue'
 import { api } from '../api'
 
 const notify = inject('notify')
@@ -10,6 +10,41 @@ const info = ref({})
 const cfg = ref('')
 const showCfg = ref(false)
 const busy = ref(false)
+const rules = ref({})
+
+// 规则集名称 -> 中文说明（顺序与后端 ruleProviderDefs 一致）
+const RULE_LABELS = {
+  gfw: '被墙域名（走节点）',
+  direct: '国内域名（直连）',
+  cncidr: '国内 IP 段（直连）',
+  lancidr: '局域网 IP 段（直连）',
+  private: '私有域名（直连）'
+}
+const ruleItems = computed(() =>
+  Object.keys(RULE_LABELS).map((n) => ({
+    name: n, label: RULE_LABELS[n], count: (rules.value.files || {})[n] ?? 0
+  }))
+)
+const rulesOrigin = computed(() => (rules.value.origin === 'online' ? '（已手动更新）' : '（随应用内置）'))
+const rulesUpdated = computed(() => {
+  const v = rules.value.updated_at
+  return v ? new Date(v).toLocaleString() : '—'
+})
+
+async function loadRules() {
+  try { rules.value = await api.get('/api/rules') } catch (e) { /* 忽略 */ }
+}
+
+async function updateRules() {
+  busy.value = true
+  try {
+    const r = await api.post('/api/rules/update', {})
+    notify('分流规则已更新（共 ' + (r.total || 0) + ' 条）')
+    await loadRules(); await loadStatus()
+  } catch (e) {
+    notify('规则更新失败：' + e.message, true)
+  } finally { busy.value = false }
+}
 
 async function load() {
   try {
@@ -21,6 +56,7 @@ async function load() {
     }
   } catch (e) { notify(e.message, true) }
   try { info.value = await api.get('/api/version') } catch (e) { /* 忽略 */ }
+  await loadRules()
 }
 
 async function save() {
@@ -89,8 +125,35 @@ onMounted(load)
       <tbody>
         <tr><th style="width:180px">应用版本</th><td class="mono">{{ info.app || '—' }}</td></tr>
         <tr><th>内核版本</th><td class="mono">{{ info.mihomo || '未运行' }}</td></tr>
+        <tr>
+          <th>规则版本</th>
+          <td class="mono">{{ info.rules || '—' }}<span class="muted"> {{ rulesOrigin }}</span></td>
+        </tr>
       </tbody>
     </table>
+  </div>
+
+  <div class="card">
+    <h2>分流规则</h2>
+    <div class="muted">
+      <p>规则集随应用内置，作用于分流判定：内网/局域网 → 被墙域名走节点 → 国内域名与 IP 直连 → 订阅自带规则。</p>
+      <p>规则来自上游公开仓库（{{ rules.source || 'Loyalsoldier/clash-rules' }}）。若规则过期，可在此<b>直接更新，无需升级应用</b>。</p>
+    </div>
+    <table style="margin-top:10px">
+      <tbody>
+        <tr v-for="it in ruleItems" :key="it.name">
+          <th style="width:200px">{{ it.label }}</th>
+          <td class="mono">{{ it.count }} 条</td>
+        </tr>
+        <tr><th>规则总计</th><td class="mono">{{ rules.total || 0 }} 条</td></tr>
+        <tr><th>最近更新</th><td class="mono">{{ rulesUpdated }}</td></tr>
+      </tbody>
+    </table>
+    <div class="row" style="margin-top:14px">
+      <button class="primary" :disabled="busy" @click="updateRules">更新分流规则</button>
+      <button :disabled="busy" @click="loadRules">刷新状态</button>
+      <span class="muted" v-if="busy">更新中，可能需要十几秒…</span>
+    </div>
   </div>
 
   <div class="card">

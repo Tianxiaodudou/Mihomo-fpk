@@ -35,6 +35,11 @@ func EnsureRuleFiles(varDir string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return dir, err
 	}
+	// 用户在设置页手动更新过规则：保留其版本，不要用内置快照覆盖
+	// （否则「只更新规则、不升级应用」会被每次重建配置打回原形）。
+	if onlineRulesActive(dir) {
+		return dir, nil
+	}
 	for _, rp := range ruleProviderDefs {
 		want, err := ruleFS.ReadFile(rp.File)
 		if err != nil {

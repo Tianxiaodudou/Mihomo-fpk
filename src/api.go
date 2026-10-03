@@ -14,7 +14,9 @@ import (
 	"time"
 )
 
-const appVersion = "1.0.14"
+// appVersion 由构建时注入（tools/build.py 的 -ldflags -X main.appVersion=<manifest version>），
+// 默认值仅用于本地 go run/build 调试。
+var appVersion = "1.0.17"
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -47,6 +49,8 @@ func (a *App) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/subs/update", a.hSubUpdateAll)
 	mux.HandleFunc("POST /api/subs/import", a.hSubImport)
 	mux.HandleFunc("POST /api/config/rebuild", a.hRebuild)
+	mux.HandleFunc("GET /api/rules", a.hRulesInfo)
+	mux.HandleFunc("POST /api/rules/update", a.hRulesUpdate)
 	mux.HandleFunc("GET /api/config", a.hConfigText)
 
 	mux.HandleFunc("GET /api/proxies", a.hProxies)
@@ -99,8 +103,11 @@ func (a *App) mihomoVersion() string {
 }
 
 func (a *App) hVersion(w http.ResponseWriter, r *http.Request) {
+	rulesVer, rulesOrigin := RulesVersion(a.Paths.Var)
 	writeJSON(w, 200, map[string]any{
 		"app":           appVersion,
+		"rules":         rulesVer,
+		"rules_origin":  rulesOrigin,
 		"mihomo":        a.mihomoVersion(),
 		"go":            runtime.Version(),
 		"arch":          a.Paths.Arch,
@@ -381,6 +388,39 @@ func (a *App) hRebuild(w http.ResponseWriter, r *http.Request) {
 		"ok": true, "total": res.Total, "unique": res.Unique,
 		"duplicated": res.Duplicated, "groups": res.Groups,
 		"rules": res.Rules, "notices": res.Dropped,
+	})
+}
+
+// ---------- 分流规则（设置页可手动更新，无需升级应用） ----------
+
+func (a *App) hRulesInfo(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, RulesInfo(a.Paths.Var))
+}
+
+func (a *App) hRulesUpdate(w http.ResponseWriter, r *http.Request) {
+	s := loadSettings()
+	proxyAddr := ""
+	if a.Mihomo.Running() {
+		proxyAddr = "127.0.0.1:" + strconv.Itoa(s.ProxyPort) // 直连 GitHub 失败时走本机代理
+	}
+	a.mu.Lock()
+	meta, err := UpdateRules(a.Paths.Var, proxyAddr)
+	if err == nil {
+		_, err = a.rebuildLocked(nil) // 规则变更后重建配置，触发内核重新读取规则文件
+	}
+	if err == nil && a.Mihomo.Running() {
+		if e := a.Mihomo.Reload(); e != nil {
+			err = e
+		}
+	}
+	a.mu.Unlock()
+	if err != nil {
+		writeErr(w, 500, "规则更新失败："+err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"ok": true, "version": rulesVersionLabel(meta), "updated_at": meta.UpdatedAt,
+		"source": meta.Source, "files": meta.Files, "total": sumCounts(meta.Files),
 	})
 }
 
