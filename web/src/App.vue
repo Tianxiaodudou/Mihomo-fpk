@@ -8,6 +8,30 @@ import Nodes from './pages/Nodes.vue'
 import SettingsPage from './pages/Settings.vue'
 import Logs from './pages/Logs.vue'
 
+// 日间 / 夜间模式（切换按钮在顶栏正中）
+const theme = ref('light')
+const THEME_KEY = 'mihomo-theme'
+function applyTheme(t) {
+  theme.value = t === 'dark' ? 'dark' : 'light'
+  document.documentElement.setAttribute('data-theme', theme.value)
+}
+function toggleTheme() {
+  applyTheme(theme.value === 'dark' ? 'light' : 'dark')
+  try { localStorage.setItem(THEME_KEY, theme.value) } catch (e) {}
+}
+function savedTheme() {
+  try { return localStorage.getItem(THEME_KEY) } catch (e) { return null }
+}
+function initTheme() {
+  const saved = savedTheme()
+  const mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null
+  applyTheme(saved || (mq && mq.matches ? 'dark' : 'light'))
+  if (mq) {
+    const h = (e) => { if (!savedTheme()) applyTheme(e.matches ? 'dark' : 'light') }
+    mq.addEventListener ? mq.addEventListener('change', h) : mq.addListener(h)
+  }
+}
+
 const tabs = [
   { k: 'dash', t: '概览' },
   { k: 'subs', t: '订阅' },
@@ -37,6 +61,7 @@ provide('loadStatus', loadStatus)
 let iv = null
 onMounted(() => {
   setTitle('显式代理')
+  initTheme()
   loadStatus()
   iv = setInterval(loadStatus, 5000)
 })
@@ -50,6 +75,11 @@ onUnmounted(() => clearInterval(iv))
       <span class="badge" :class="status.running ? 'on' : 'off'">
         {{ status.running ? '内核运行中' : '内核已停止' }}
       </span>
+      <button
+        class="theme-toggle"
+        :title="theme === 'dark' ? '当前：夜间模式 · 点击切换到日间模式' : '当前：日间模式 · 点击切换到夜间模式'"
+        @click="toggleTheme"
+      >{{ theme === 'dark' ? '🌙 夜间模式' : '☀️ 日间模式' }}</button>
       <div class="tabs">
         <button
           v-for="t in tabs"

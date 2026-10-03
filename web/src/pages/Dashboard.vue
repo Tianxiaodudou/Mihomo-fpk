@@ -237,7 +237,7 @@ function fmtTime(ts) {
       </div>
       <div class="stat">
         <div class="k">内网使用提示</div>
-        <div class="v" style="font-size:12px; font-weight:400; line-height:1.7; color:#56637a">
+        <div class="v" style="font-size:12px; font-weight:400; line-height:1.7; color:var(--fg2)">
           手机 / 电脑把 HTTP 或 SOCKS5 代理设为左侧地址即可；端口可在「设置」中修改，国内网站默认直连、境外流量走所选节点。
         </div>
       </div>

@@ -403,20 +403,20 @@ onMounted(async () => {
   cursor: pointer;
 }
 .node-card.pick:hover {
-  border-color: #1668dc;
+  border-color: var(--primary);
 }
 .node-card.sel {
-  border-color: #1668dc;
+  border-color: var(--primary);
   box-shadow: inset 0 0 0 1px rgba(22, 104, 220, 0.35);
 }
 .node-card.active {
-  border-color: #1a7f37;
+  border-color: var(--ok);
   background: rgba(26, 127, 55, 0.1);
   box-shadow: inset 0 0 0 2px rgba(26, 127, 55, 0.55);
 }
 .node-card.active .node-title::before {
   content: '✓ ';
-  color: #1a7f37;
+  color: var(--ok);
   font-weight: 700;
 }
 .node-title {
