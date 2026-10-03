@@ -55,7 +55,16 @@ jobs:
       # static_test.go 还会校验 index.html 里的资源真在嵌入文件系统内。
       - name: Go 单元测试（分流规则顺序 / 静态资源嵌入）
         working-directory: src
-        run: go test ./... -count=1
+        run: |
+          log="${RUNNER_TEMP:-/tmp}/gotest.log"
+          if ! go test ./... -count=1 -v >"$log" 2>&1; then
+            # 失败时把关键行塞进 GitHub 注解：注解在 run 页面公开可读，无需登录即可定位失败用例
+            echo "::error title=GoTestFail::$(grep -E '^(--- FAIL|FAIL|ok )|_test\.go:[0-9]+:|no matching files|panic:' "$log" | head -40 | paste -sd'|' -)"
+            echo "----- go test 输出（末尾 120 行）-----"
+            tail -n 120 "$log"
+            exit 1
+          fi
+          tail -n 5 "$log"
 
       - name: 提交版本号
         run: |
