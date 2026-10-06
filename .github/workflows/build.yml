@@ -39,6 +39,11 @@ jobs:
         id: ver
         run: python3 tools/bump_version.py
 
+      # 更新日志必须放在打包之前：manifest.changelog 会随 fpk 一起交付，
+      # 显示在应用中心的「更新说明」里；放在打包之后会滞后一个版本。
+      - name: 生成更新日志（Release 说明 + manifest.changelog）
+        run: python3 tools/release_notes.py --version "${{ steps.ver.outputs.version }}"
+
       - name: 构建 fpk（前端 + Go 双架构 + mihomo 内核 + 打包）
         run: |
           echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
@@ -66,9 +71,6 @@ jobs:
             exit 1
           fi
           tail -n 5 "$log"
-
-      - name: 生成更新日志（Release 说明 + manifest.changelog）
-        run: python3 tools/release_notes.py --version "${{ steps.ver.outputs.version }}"
 
       - name: 提交版本号
         run: |
