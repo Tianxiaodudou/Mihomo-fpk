@@ -292,10 +292,15 @@ function fmtTime(ts) {
       <div class="stat"><div class="k">内核版本</div><div class="v mono">{{ status.mihomo_version || '未运行' }}</div></div>
       <div class="stat"><div class="k">应用版本</div><div class="v mono">{{ status.app_version }}</div></div>
       <div class="stat"><div class="k">订阅数量</div><div class="v">{{ status.sub_count }}</div></div>
+      <div class="stat"><div class="k">当前订阅</div><div class="v">{{ status.active_sub || '未激活' }}</div></div>
       <div class="stat"><div class="k">节点合计</div><div class="v">{{ status.node_count }}</div></div>
       <div class="stat"><div class="k">策略组</div><div class="v">{{ status.group_count }}</div></div>
       <div class="stat"><div class="k">自动更新</div><div class="v">{{ status.auto_update ? ('每 ' + status.auto_hours + ' 小时') : '未开启' }}</div></div>
+      <div class="stat"><div class="k">自动切换订阅</div><div class="v">{{ status.auto_switch ? '已开启' : '未开启' }}</div></div>
       <div class="stat"><div class="k">最近更新</div><div class="v">{{ fmtTime(status.last_update) }}</div></div>
+    </div>
+    <div v-if="status.auto_switch && status.switch_info" class="notice" :class="{ errbox: status.switch_err }" style="margin-top:10px">
+      自动切换：{{ status.switch_info }}<span v-if="status.switch_at" class="muted">（{{ fmtTime(status.switch_at) }}）</span>
     </div>
     <div class="row" style="margin-top:12px">
       <button @click="emit('goto', 'subs')">管理订阅</button>

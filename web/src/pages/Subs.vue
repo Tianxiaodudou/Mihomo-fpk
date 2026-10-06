@@ -8,6 +8,11 @@ const loadStatus = inject('loadStatus')
 
 const subs = ref([])
 const notices = ref([])
+const activeId = ref('')
+const autoSwitch = ref(false)
+const switchInfo = ref('')
+const switchAt = ref(0)
+const switchErr = ref(false)
 const loading = ref(false)
 const busyId = ref('')
 const pasteShow = ref(false)
@@ -23,6 +28,11 @@ async function load() {
     const r = await api.get('/api/subs')
     subs.value = r.subs || []
     notices.value = r.notices || []
+    activeId.value = r.active_id || ''
+    autoSwitch.value = !!r.auto_switch
+    switchInfo.value = r.switch_info || ''
+    switchAt.value = r.switch_at || 0
+    switchErr.value = !!r.switch_err
   } catch (e) {
     notify(e.message, true)
   } finally {
@@ -124,12 +134,26 @@ async function updateOne(s) {
   } catch (e) { notify(e.message, true) } finally { busyId.value = '' }
 }
 
-async function toggle(s) {
+// 激活 / 取消激活：同一时间只允许一个订阅处于激活状态
+async function activate(s, on) {
   try {
-    await api.put('/api/subs/' + s.id, { enabled: !s.enabled })
-    notify((s.name || '订阅') + (s.enabled ? ' 已停用' : ' 已启用'))
+    const r = await api.post('/api/subs/' + s.id + '/activate', { active: on })
+    notify(on ? '「' + (s.name || s.id) + '」已激活，节点列表显示该订阅的节点' : '「' + (s.name || s.id) + '」已取消激活')
     await load(); await loadStatus()
   } catch (e) { notify(e.message, true) }
+}
+
+// 排序：与相邻卡片交换位置；越靠上越优先成为自动切换的备选
+async function move(index, delta) {
+  const arr = subs.value.slice()
+  const j = index + delta
+  if (j < 0 || j >= arr.length) return
+  const t = arr[index]; arr[index] = arr[j]; arr[j] = t
+  subs.value = arr
+  try {
+    await api.post('/api/subs/reorder', { ids: arr.map((x) => x.id) })
+    notify('排序已保存：' + arr.map((x) => x.name || x.id).join(' → '))
+  } catch (e) { notify(e.message, true); await load() }
 }
 
 async function rename(s) {
@@ -205,18 +229,34 @@ onMounted(load)
 
     <div class="muted" style="margin-top:10px">提示：也可以把订阅文件（.txt / .yaml / .json / base64）直接拖拽到本页面导入。</div>
 
+    <div class="muted" style="margin-top:10px">
+      同一时间只有一个订阅处于激活状态，节点列表只显示激活订阅的节点。用卡片右上角的 ↑ ↓ 调整顺序，越靠上越优先成为「自动切换订阅」的备选。
+    </div>
+    <div v-if="autoSwitch && switchInfo" class="notice" :class="{ errbox: switchErr }" style="margin-top:8px">
+      自动切换：{{ switchInfo }}<span v-if="switchAt" class="muted">（{{ fmtTime(switchAt) }}）</span>
+    </div>
+
     <div class="sub-list" style="margin-top:12px">
-      <div v-for="s in subs" :key="s.id" class="sub-card">
-        <div class="k">名称</div>
-        <div class="v sub-name">{{ s.name || '未命名' }}</div>
+      <div v-for="(s, i) in subs" :key="s.id" class="sub-card" :class="{ 'sub-active': s.id === activeId }">
+        <div class="row between">
+          <div class="row">
+            <span class="sub-idx">{{ i + 1 }}</span>
+            <span class="v sub-name">{{ s.name || '未命名' }}</span>
+            <span v-if="s.id === activeId" class="badge-on">已激活</span>
+          </div>
+          <div class="row">
+            <button class="sm" :disabled="i === 0" title="上移（更优先成为备选）" @click="move(i, -1)">↑</button>
+            <button class="sm" :disabled="i === subs.length - 1" title="下移" @click="move(i, 1)">↓</button>
+          </div>
+        </div>
         <div class="k" style="margin-top:8px">来源</div>
         <div class="v mono sub-src">{{ subSource(s) }}</div>
         <div class="k" style="margin-top:8px">最近更新</div>
         <div class="v sub-time">{{ fmtTime(s.updated_at) }}</div>
         <div class="row" style="margin-top:10px">
+          <button class="sm" :class="{ primary: s.id !== activeId }" @click="activate(s, s.id !== activeId)">{{ s.id === activeId ? '取消激活' : '激活' }}</button>
           <button class="sm" :disabled="busyId === s.id" @click="updateOne(s)">更新</button>
           <button class="sm" @click="rename(s)">改名</button>
-          <button class="sm" @click="toggle(s)">{{ s.enabled ? '停用' : '启用' }}</button>
           <button class="sm danger" @click="remove(s)">删除</button>
         </div>
         <div v-if="s.last_error" class="errbox" style="margin-top:8px">{{ s.last_error }}</div>

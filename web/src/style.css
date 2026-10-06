@@ -281,6 +281,17 @@ pre.logs { height: 360px; line-height: 1.6; white-space: pre-wrap; color: var(--
 .sub-card .v { font-size: 13px; font-weight: 600; word-break: break-all; overflow-wrap: anywhere; }
 .sub-card .sub-name { font-weight: 600; }
 .sub-card .sub-time { color: var(--muted); }
+.sub-card.sub-active { border-color: var(--ok); }
+.sub-idx {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; margin-right: 8px; border-radius: 50%;
+  background: var(--soft2); color: var(--muted); font-size: 12px; font-weight: 700;
+}
+.sub-card.sub-active .sub-idx { background: var(--ok-bg); color: var(--ok); }
+.badge-on {
+  display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 999px;
+  font-size: 12px; background: var(--ok-bg); color: var(--ok);
+}
 
 /* ===== 滚动条 ===== */
 ::-webkit-scrollbar { width: 10px; height: 10px; }

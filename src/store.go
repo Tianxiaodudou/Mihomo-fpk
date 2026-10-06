@@ -19,6 +19,8 @@ type Settings struct {
 	AutoUpdateHours   int    `json:"auto_update_hours"`
 	LastUpdate        int64  `json:"last_update"`
 	ProbeURL          string `json:"probe_url"`
+	// AutoSwitch 自动切换订阅：当前激活订阅的节点全部不可用时，自动切换到下一个订阅（按订阅列表顺序）。
+	AutoSwitch bool `json:"auto_switch"`
 }
 
 func defaultSettings() *Settings {
@@ -106,7 +108,7 @@ func (s *SubStore) Add(name, url string) (*Subscription, error) {
 	if name == "" {
 		name = url
 	}
-	sub := &Subscription{ID: newID(), Name: name, URL: url, Enabled: true}
+	sub := &Subscription{ID: newID(), Name: name, URL: url}
 	s.Subs = append(s.Subs, sub)
 	if err := s.saveLocked(); err != nil {
 		return nil, err
@@ -139,6 +141,99 @@ func (s *SubStore) Remove(id string) error {
 		}
 	}
 	return nil
+}
+
+// Active 返回当前处于「激活」状态的订阅。同一时刻至多一个，列表顺序靠前者优先。
+func (s *SubStore) Active() *Subscription {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, x := range s.Subs {
+		if x.Enabled {
+			return x
+		}
+	}
+	return nil
+}
+
+// Activate 激活 / 取消激活某个订阅。
+// 同一时刻只允许一个订阅处于激活状态：激活某个订阅时，其余订阅会自动取消激活。
+func (s *SubStore) Activate(id string, on bool) (*Subscription, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var target *Subscription
+	for _, x := range s.Subs {
+		if x.ID == id {
+			target = x
+		}
+	}
+	if target == nil {
+		return nil, os.ErrNotExist
+	}
+	if on {
+		for _, x := range s.Subs {
+			x.Enabled = x.ID == id
+		}
+	} else {
+		target.Enabled = false
+	}
+	if err := s.saveLocked(); err != nil {
+		return nil, err
+	}
+	return target, nil
+}
+
+// Reorder 按给定 id 顺序重排订阅卡片；未列出的订阅按原相对顺序追加在后面。
+// 列表顺序即「自动切换订阅」的备选优先级：靠上的先被尝试。
+func (s *SubStore) Reorder(ids []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	byID := make(map[string]*Subscription, len(s.Subs))
+	for _, x := range s.Subs {
+		byID[x.ID] = x
+	}
+	out := make([]*Subscription, 0, len(s.Subs))
+	used := make(map[string]bool, len(s.Subs))
+	for _, id := range ids {
+		if x, ok := byID[id]; ok && !used[id] {
+			used[id] = true
+			out = append(out, x)
+		}
+	}
+	for _, x := range s.Subs {
+		if !used[x.ID] {
+			out = append(out, x)
+		}
+	}
+	s.Subs = out
+	return s.saveLocked()
+}
+
+// Normalize 旧数据迁移：历史上允许多个订阅同时启用，现在改为单一「激活」语义，
+// 故只保留列表中最靠前的一个激活订阅，其余取消激活。返回被取消激活的订阅名。
+func (s *SubStore) Normalize() ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	first := false
+	var dropped []string
+	for _, x := range s.Subs {
+		if !x.Enabled {
+			continue
+		}
+		if !first {
+			first = true
+			continue
+		}
+		x.Enabled = false
+		if x.Name != "" {
+			dropped = append(dropped, x.Name)
+		} else {
+			dropped = append(dropped, x.ID)
+		}
+	}
+	if len(dropped) == 0 {
+		return nil, nil
+	}
+	return dropped, s.saveLocked()
 }
 
 func (s *SubStore) saveLocked() error {

@@ -5,7 +5,7 @@ import { api } from '../api'
 const notify = inject('notify')
 const loadStatus = inject('loadStatus')
 
-const form = ref({ proxy_port: 7890, auto_update_enabled: true, auto_update_hours: 6 })
+const form = ref({ proxy_port: 7890, auto_update_enabled: true, auto_update_hours: 6, auto_switch: false })
 const info = ref({})
 const cfg = ref('')
 const showCfg = ref(false)
@@ -52,7 +52,8 @@ async function load() {
     form.value = {
       proxy_port: s.proxy_port,
       auto_update_enabled: !!s.auto_update_enabled,
-      auto_update_hours: s.auto_update_hours
+      auto_update_hours: s.auto_update_hours,
+      auto_switch: !!s.auto_switch
     }
   } catch (e) { notify(e.message, true) }
   try { info.value = await api.get('/api/version') } catch (e) { /* 忽略 */ }
@@ -65,7 +66,8 @@ async function save() {
     const r = await api.put('/api/settings', {
       proxy_port: Number(form.value.proxy_port),
       auto_update_enabled: !!form.value.auto_update_enabled,
-      auto_update_hours: Number(form.value.auto_update_hours)
+      auto_update_hours: Number(form.value.auto_update_hours),
+      auto_switch: !!form.value.auto_switch
     })
     notify(r.message || '设置已保存')
     if (r.errors && r.errors.length) notify(r.errors.join('；'), true)
@@ -109,6 +111,16 @@ onMounted(load)
       </label>
       <label>更新间隔（小时）</label>
       <input v-model="form.auto_update_hours" type="number" min="1" max="168" style="width:120px" />
+
+      <label style="margin-top:12px">
+        <input type="checkbox" v-model="form.auto_switch" style="width:auto; margin-right:6px" />
+        自动切换订阅
+      </label>
+      <div class="muted">
+        开启后，当<b>当前激活订阅的全部节点都超时</b>（无法代理）时，自动切换到订阅列表中第一个可用的订阅；
+        切换顺序按「订阅管理」页卡片的排列顺序（可用 ↑ ↓ 调整），越靠上越优先。
+        仅在总开关已打开、内核运行中生效；刚切换过的 3 分钟内不会再次切换。
+      </div>
 
       <div class="row" style="margin-top:14px">
         <button class="primary" :disabled="busy" @click="save">保存设置</button>

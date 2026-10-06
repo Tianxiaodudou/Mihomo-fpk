@@ -48,6 +48,8 @@ func (a *App) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/subs/{id}/update", a.hSubUpdateOne)
 	mux.HandleFunc("POST /api/subs/update", a.hSubUpdateAll)
 	mux.HandleFunc("POST /api/subs/import", a.hSubImport)
+	mux.HandleFunc("POST /api/subs/reorder", a.hSubsReorder)
+	mux.HandleFunc("POST /api/subs/{id}/activate", a.hSubActivate)
 	mux.HandleFunc("POST /api/config/rebuild", a.hRebuild)
 	mux.HandleFunc("GET /api/rules", a.hRulesInfo)
 	mux.HandleFunc("POST /api/rules/update", a.hRulesUpdate)
@@ -122,6 +124,11 @@ func (a *App) hStatus(w http.ResponseWriter, r *http.Request) {
 	if a.Mihomo.Running() {
 		mv = a.mihomoVersion()
 	}
+	activeID, activeName := "", ""
+	if x := a.Subs.Active(); x != nil {
+		activeID, activeName = x.ID, x.Name
+	}
+	swInfo, swAt, swErr := a.AutoSwitchInfo()
 	writeJSON(w, 200, map[string]any{
 		"running":       a.Mihomo.Running(),
 		"port":          s.ProxyPort,
@@ -138,6 +145,12 @@ func (a *App) hStatus(w http.ResponseWriter, r *http.Request) {
 		"auto_hours":    s.AutoUpdateHours,
 		"last_error":    a.Mihomo.LastError(),
 		"notices":       a.notices,
+		"active_id":     activeID,
+		"active_sub":    activeName,
+		"auto_switch":   s.AutoSwitch,
+		"switch_info":   swInfo,
+		"switch_at":     swAt,
+		"switch_err":    swErr,
 		"config_file":   a.Paths.ConfigFile(),
 		"socket":        a.Paths.MihomoSock(),
 		"now":           nowStr(),
@@ -170,10 +183,20 @@ func (a *App) hPowerSet(w http.ResponseWriter, r *http.Request) {
 // ---------- 订阅 ----------
 
 func (a *App) subsPayload() map[string]any {
+	active := ""
+	if x := a.Subs.Active(); x != nil {
+		active = x.ID
+	}
+	info, at, isErr := a.AutoSwitchInfo()
 	return map[string]any{
-		"subs":     a.Subs.List(),
-		"notices":  a.notices,
-		"updating": a.updating,
+		"subs":        a.Subs.List(),
+		"notices":     a.notices,
+		"updating":    a.updating,
+		"active_id":   active,
+		"auto_switch": loadSettings().AutoSwitch,
+		"switch_info": info,
+		"switch_at":   at,
+		"switch_err":  isErr,
 	}
 }
 
@@ -196,6 +219,7 @@ func (a *App) hSubAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	a.activateIfNone(sub.ID) // 列表中还没有激活订阅时，新添加的订阅自动激活
 	_, errs, _ := a.Refresh([]string{sub.ID}, true)
 	writeJSON(w, 200, map[string]any{"sub": a.Subs.Get(sub.ID), "errors": errs, "subs": a.Subs.List()})
 }
@@ -213,20 +237,27 @@ func (a *App) hSubUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	b, _ := readBody(r, 1<<20)
 	_ = json.Unmarshal(b, &body)
-	_, err := a.Subs.Update(id, func(s *Subscription) {
-		if body.Name != nil && *body.Name != "" {
-			s.Name = *body.Name
+	// 名称 / 地址为普通字段修改
+	if body.Name != nil || body.URL != nil {
+		_, err := a.Subs.Update(id, func(s *Subscription) {
+			if body.Name != nil && *body.Name != "" {
+				s.Name = *body.Name
+			}
+			if body.URL != nil {
+				s.URL = *body.URL
+			}
+		})
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
 		}
-		if body.URL != nil {
-			s.URL = *body.URL
+	}
+	// enabled = 激活状态：同一时间只允许一个订阅处于激活状态
+	if body.Enabled != nil {
+		if _, err := a.Subs.Activate(id, *body.Enabled); err != nil {
+			writeErr(w, 500, err.Error())
+			return
 		}
-		if body.Enabled != nil {
-			s.Enabled = *body.Enabled
-		}
-	})
-	if err != nil {
-		writeErr(w, 500, err.Error())
-		return
 	}
 	var errs []string
 	if body.URL != nil && *body.URL != "" {
@@ -234,7 +265,11 @@ func (a *App) hSubUpdate(w http.ResponseWriter, r *http.Request) {
 	} else {
 		a.Refresh([]string{}, true)
 	}
-	writeJSON(w, 200, map[string]any{"sub": a.Subs.Get(id), "errors": errs})
+	active := ""
+	if x := a.Subs.Active(); x != nil {
+		active = x.ID
+	}
+	writeJSON(w, 200, map[string]any{"sub": a.Subs.Get(id), "errors": errs, "subs": a.Subs.List(), "active_id": active})
 }
 
 func (a *App) hSubDelete(w http.ResponseWriter, r *http.Request) {
@@ -260,6 +295,55 @@ func (a *App) hSubUpdateOne(w http.ResponseWriter, r *http.Request) {
 		code = 500
 	}
 	writeJSON(w, code, map[string]any{"errors": errs, "sub": a.Subs.Get(id), "notices": a.notices})
+}
+
+// hSubActivate 激活 / 取消激活订阅。同一时间只允许一个订阅处于激活状态：
+// 激活某个订阅时，其余订阅会自动取消激活（节点列表只显示激活订阅的节点）。
+func (a *App) hSubActivate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if a.Subs.Get(id) == nil {
+		writeErr(w, 404, "订阅不存在")
+		return
+	}
+	var body struct {
+		Active *bool `json:"active"`
+	}
+	b, _ := readBody(r, 1<<20)
+	_ = json.Unmarshal(b, &body)
+	on := true
+	if body.Active != nil {
+		on = *body.Active
+	}
+	if _, err := a.Subs.Activate(id, on); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	errs := []string{}
+	if _, err := a.RebuildAndReload(); err != nil {
+		errs = append(errs, err.Error())
+	}
+	active := ""
+	if x := a.Subs.Active(); x != nil {
+		active = x.ID
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "subs": a.Subs.List(), "active_id": active, "notices": a.notices, "errors": errs})
+}
+
+// hSubsReorder 调整订阅卡片顺序。列表顺序即「自动切换订阅」的备选优先级：靠上的先被尝试。
+func (a *App) hSubsReorder(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		IDs []string `json:"ids"`
+	}
+	b, _ := readBody(r, 1<<20)
+	if err := json.Unmarshal(b, &body); err != nil || len(body.IDs) == 0 {
+		writeErr(w, 400, "缺少 ids（订阅顺序）")
+		return
+	}
+	if err := a.Subs.Reorder(body.IDs); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "subs": a.Subs.List()})
 }
 
 func (a *App) hSubUpdateAll(w http.ResponseWriter, r *http.Request) {
@@ -301,6 +385,7 @@ func (a *App) hSubImport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	a.activateIfNone(sub.ID) // 列表中还没有激活订阅时，新导入的订阅自动激活
 	// 记录来源文件路径（订阅页「来源」一栏展示），避免导入后无法追溯来源。
 	if body.Path != "" {
 		if s2, err := a.Subs.Update(sub.ID, func(x *Subscription) { x.Path = body.Path }); err == nil {
@@ -448,6 +533,7 @@ func (a *App) hSettingsSet(w http.ResponseWriter, r *http.Request) {
 		AutoUpdateEnabled *bool   `json:"auto_update_enabled"`
 		AutoUpdateHours   *int    `json:"auto_update_hours"`
 		ProbeURL          *string `json:"probe_url"`
+		AutoSwitch        *bool   `json:"auto_switch"`
 	}
 	b, _ := readBody(r, 1<<16)
 	if err := json.Unmarshal(b, &body); err != nil {
@@ -481,6 +567,9 @@ func (a *App) hSettingsSet(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		cur.ProbeURL = u
+	}
+	if body.AutoSwitch != nil {
+		cur.AutoSwitch = *body.AutoSwitch
 	}
 	if err := saveSettings(cur); err != nil {
 		writeErr(w, 500, err.Error())

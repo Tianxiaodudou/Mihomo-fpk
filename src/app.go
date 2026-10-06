@@ -20,6 +20,15 @@ type App struct {
 	notices  []string
 	updating bool
 	lastErr  string
+
+	// 自动切换订阅（设置页开关）的运行状态
+	swMu       sync.Mutex
+	swBusy     bool
+	swAt       int64 // 上次自动切换（含尝试）的时间
+	swLastFail bool  // 上次尝试是否以「所有订阅都不可用」结束
+	swInfo     string
+	swInfoAt   int64
+	swInfoErr  bool
 }
 
 func NewApp(p *Paths) *App {
@@ -99,6 +108,30 @@ func (a *App) rebuildLocked(onlyIDs map[string]bool) (*MergeResult, error) {
 	res.Config = cfg
 	a.notices = res.Dropped
 	return res, nil
+}
+
+// RebuildAndReload 重建配置；内核运行中则让其重载，立即生效。
+func (a *App) RebuildAndReload() (*MergeResult, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	res, err := a.rebuildLocked(nil)
+	if err != nil {
+		return res, err
+	}
+	if a.Mihomo.Running() {
+		if e := a.Mihomo.Reload(); e != nil {
+			return res, e
+		}
+	}
+	return res, nil
+}
+
+// activateIfNone 若当前没有任何订阅处于激活状态，则激活给定订阅（新增第一个订阅时自动生效）。
+func (a *App) activateIfNone(id string) {
+	if a.Subs.Active() != nil {
+		return
+	}
+	_, _ = a.Subs.Activate(id, true)
 }
 
 func (a *App) cacheFile(id string) string {
@@ -220,6 +253,10 @@ func (a *App) SetPower(on bool) error {
 
 // OnStartup 系统启动/应用启动时调用：总开关保持关闭（文档要求）。
 func (a *App) OnStartup() {
+	// 旧数据迁移：历史版本允许多个订阅同时启用，现在只保留列表中最靠前的一个激活订阅
+	if dropped, err := a.Subs.Normalize(); err == nil && len(dropped) > 0 {
+		a.notices = append(a.notices, "同一时间只允许一个订阅处于激活状态，已自动取消激活："+strings.Join(dropped, "、"))
+	}
 	b, err := os.ReadFile(a.Paths.PowerFile())
 	if err == nil && strings.TrimSpace(string(b)) == "on" && !a.Mihomo.Running() {
 		// 上次为开启但进程已随重启消失：状态回落为关闭
@@ -231,10 +268,15 @@ func (a *App) OnStartup() {
 func (a *App) AutoLoop(stop <-chan struct{}) {
 	tick := time.NewTicker(10 * time.Minute)
 	defer tick.Stop()
+	// 自动切换订阅的独立节拍：比自动更新更频繁
+	swtick := time.NewTicker(autoSwitchInterval)
+	defer swtick.Stop()
 	for {
 		select {
 		case <-stop:
 			return
+		case <-swtick.C:
+			a.autoSwitchTick()
 		case <-tick.C:
 			s := loadSettings()
 			if !s.AutoUpdateEnabled {
