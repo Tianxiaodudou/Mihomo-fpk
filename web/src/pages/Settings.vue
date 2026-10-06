@@ -207,34 +207,58 @@ onMounted(load)
   <div class="card" id="subsCard">
     <h2>订阅设置</h2>
     <div class="form">
-      <div class="row between sw-row">
-        <div class="sw-text">
-          <div class="v">定时自动更新订阅</div>
-          <div class="muted">按下面的间隔自动重新拉取订阅，保持节点为最新；单个订阅也可以在「订阅管理」页手动更新。</div>
-        </div>
+      <!-- 定时自动更新订阅：标题后紧跟开关 → 介绍 → 显隐参数 -->
+      <div class="sw-head">
+        <span class="v">定时自动更新订阅</span>
         <div id="swAutoUpdate" class="switch" :class="{ on: form.auto_update_enabled }" role="switch"
              :aria-checked="String(!!form.auto_update_enabled)" tabindex="0"
              @click="form.auto_update_enabled = !form.auto_update_enabled"></div>
       </div>
-
+      <div class="muted">按下面的间隔自动重新拉取订阅，保持节点为最新；单个订阅也可以在「订阅管理」页手动更新。</div>
       <template v-if="form.auto_update_enabled">
         <label style="margin-top:12px">更新间隔（小时）</label>
         <input id="autoUpdateHours" v-model="form.auto_update_hours" type="number" min="1" max="168" style="width:120px" />
         <div class="muted">范围 1–168 小时，默认 <b>6</b>。</div>
       </template>
 
-      <div class="row between sw-row" style="margin-top:16px">
-        <div class="sw-text">
-          <div class="v">自动切换订阅</div>
-          <div class="muted">
-            开启后，当<b>当前激活订阅的全部节点都超时</b>（无法代理）时，自动切换到订阅列表中第一个可用的订阅；
-            切换顺序按「订阅管理」页卡片的排列顺序（可用 ↑ ↓ 调整），越靠上越优先。
-            仅在总开关已打开、内核运行中生效；刚切换过的一段时间内不会再次切换。开启后下方会出现节奏参数卡片。
-          </div>
-        </div>
+      <!-- 自动切换订阅：标题后紧跟开关 → 介绍 → 显隐参数（参数同属本卡片，不再单独成卡） -->
+      <div class="sw-head" style="margin-top:18px">
+        <span class="v">自动切换订阅</span>
         <div id="swAutoSwitch" class="switch" :class="{ on: form.auto_switch }" role="switch"
              :aria-checked="String(!!form.auto_switch)" tabindex="0"
              @click="form.auto_switch = !form.auto_switch"></div>
+      </div>
+      <div class="muted">
+        开启后，当<b>当前激活订阅的全部节点都超时</b>（无法代理）时，自动切换到订阅列表中第一个可用的订阅；
+        切换顺序按「订阅管理」页卡片的排列顺序（可用 ↑ ↓ 调整），越靠上越优先。
+        仅在总开关已打开、内核运行中生效；刚切换过的一段时间内不会再次切换。开启后下方会出现节奏参数。
+      </div>
+
+      <div v-if="form.auto_switch" id="swParamsBlock" class="sub-block">
+        <h3 class="sub-h">自动切换参数</h3>
+        <div class="muted">「自动切换订阅」的节奏参数，按需调整，单位都是<b>秒</b>。默认值即推荐值，一般不用改。</div>
+        <div class="form">
+          <label style="margin-top:10px">检测间隔（秒）：每隔多久检查一次当前订阅还能不能用</label>
+          <input v-model="swForm.switch_interval" type="number" min="10" max="600" style="width:130px" />
+          <div class="muted">范围 10–600，默认 <b>45</b>。调小＝发现更快，但探测更频繁。</div>
+
+          <label style="margin-top:10px">单节点探测超时（秒）</label>
+          <input v-model="swForm.switch_probe_timeout" type="number" min="1" max="30" style="width:130px" />
+          <div class="muted">范围 1–30，默认 <b>5</b>。节点在这段时间内没响应就算它超时。</div>
+
+          <label style="margin-top:10px">切换冷却时间（秒）：两次自动切换之间至少间隔多久</label>
+          <input v-model="swForm.switch_cooldown" type="number" min="10" max="3600" style="width:130px" />
+          <div class="muted">范围 10–3600，默认 <b>180</b>（3 分钟）。防止网络抖动导致来回切换。</div>
+
+          <label style="margin-top:10px">全部不可用后的冷却时间（秒）</label>
+          <input v-model="swForm.switch_fail_cooldown" type="number" min="30" max="7200" style="width:130px" />
+          <div class="muted">范围 30–7200，默认 <b>600</b>（10 分钟）。所有订阅都用不了时，隔这么久再试一次。</div>
+
+          <div class="row" style="margin-top:14px">
+            <button class="primary" :disabled="swBusy || !swDirty" @click="swSave">保存参数</button>
+            <button :disabled="swBusy" @click="swReset">填回默认值</button>
+          </div>
+        </div>
       </div>
 
       <div class="row" style="margin-top:14px">
@@ -244,35 +268,6 @@ onMounted(load)
     </div>
   </div>
 
-  <!-- ============ 自动切换参数（仅「自动切换订阅」开启时显示）============ -->
-  <div class="card" v-if="form.auto_switch" id="swParamsCard">
-    <h2>自动切换参数</h2>
-    <div class="muted">
-      上面「自动切换订阅」的节奏参数，按需调整，单位都是<b>秒</b>。默认值即推荐值，一般不用改。
-    </div>
-    <div class="form">
-      <label>检测间隔（秒）：每隔多久检查一次当前订阅还能不能用</label>
-      <input v-model="swForm.switch_interval" type="number" min="10" max="600" style="width:130px" />
-      <div class="muted">范围 10–600，默认 <b>45</b>。调小＝发现更快，但探测更频繁。</div>
-
-      <label style="margin-top:10px">单节点探测超时（秒）</label>
-      <input v-model="swForm.switch_probe_timeout" type="number" min="1" max="30" style="width:130px" />
-      <div class="muted">范围 1–30，默认 <b>5</b>。节点在这段时间内没响应就算它超时。</div>
-
-      <label style="margin-top:10px">切换冷却时间（秒）：两次自动切换之间至少间隔多久</label>
-      <input v-model="swForm.switch_cooldown" type="number" min="10" max="3600" style="width:130px" />
-      <div class="muted">范围 10–3600，默认 <b>180</b>（3 分钟）。防止网络抖动导致来回切换。</div>
-
-      <label style="margin-top:10px">全部不可用后的冷却时间（秒）</label>
-      <input v-model="swForm.switch_fail_cooldown" type="number" min="30" max="7200" style="width:130px" />
-      <div class="muted">范围 30–7200，默认 <b>600</b>（10 分钟）。所有订阅都用不了时，隔这么久再试一次。</div>
-
-      <div class="row" style="margin-top:14px">
-        <button class="primary" :disabled="swBusy || !swDirty" @click="swSave">保存参数</button>
-        <button :disabled="swBusy" @click="swReset">填回默认值</button>
-      </div>
-    </div>
-  </div>
 
   <!-- ===================== 3. 分流规则设置 ===================== -->
   <div class="card" id="rulesCard">
