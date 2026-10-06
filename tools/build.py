@@ -131,8 +131,8 @@ def build_go():
         env.update({"GOOS": "linux", "GOARCH": arch, "CGO_ENABLED": "0", "GOPROXY": GOPROXY})
         env.setdefault("GOTOOLCHAIN", "local")
         # 版本号与规则快照日期注入二进制（设置页展示用），避免源码里再手改版本
-        ldflags = "-s -w -X main.appVersion=%s -X main.rulesBuiltAt=%s" % (
-            manifest_version(), time.strftime("%Y-%m-%d", time.gmtime(int(os.environ.get("SOURCE_DATE_EPOCH") or time.time()))))
+        ldflags = "-s -w -X main.appVersion=%s -X main.rulesBuiltAt=%s -X main.mihomoBundled=%s" % (
+            manifest_version(), time.strftime("%Y-%m-%d", time.gmtime(int(os.environ.get("SOURCE_DATE_EPOCH") or time.time()))), MIHOMO_VERSION)
         run([go, "build", "-trimpath", "-ldflags", ldflags,
              "-o", os.path.join(outdir, "MihomoProxy-web"), "."], cwd=SRC, env=env)
         log("  linux/%s -> app/bin/%s/MihomoProxy-web" % (arch, dirname))

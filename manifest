@@ -7,7 +7,6 @@ source                = thirdparty
 maintainer            = Tianxiaodudou
 maintainer_url        = https://github.com/Tianxiaodudou/Mihomo-fpk
 distributor           = A鱼儿
-distributor_url       = 微信号：telegram96
 os_min_version        = 1.2.0401
 desktop_uidir         = ui
 desktop_applaunchname = MihomoProxy.Application

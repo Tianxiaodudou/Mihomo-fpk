@@ -47,6 +47,26 @@ function rememberAppVer(v) {
   try { localStorage.setItem(APPVER_KEY, v) } catch (e) { /* 忽略：无痕模式下 localStorage 可能不可用 */ }
 }
 
+// 发布者：点击「A鱼儿」显示微信号，并支持一键复制
+const WECHAT_ID = 'telegram96'
+const wechatShow = ref(false)
+function toggleWechat() { wechatShow.value = !wechatShow.value }
+async function copyWechat() {
+  const text = WECHAT_ID
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const ta = document.createElement('textarea')
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'
+      document.body.appendChild(ta); ta.select()
+      document.execCommand('copy'); document.body.removeChild(ta)
+    }
+    notify('微信号已复制：' + text)
+  } catch (e) {
+    notify('复制失败，请手动选中复制：' + text, true)
+  }
+}
 // 规则集名称 -> 中文说明（顺序与后端 ruleProviderDefs 一致）
 const RULE_LABELS = {
   gfw: '被墙域名（走节点）',
@@ -299,7 +319,7 @@ onMounted(load)
     <table>
       <tbody>
         <tr><th style="width:180px">应用版本</th><td class="mono" id="appVerCell">{{ appVer || '读取中…' }}</td></tr>
-        <tr><th>内核版本</th><td class="mono">{{ info.mihomo || '未运行' }}</td></tr>
+        <tr><th>内核版本</th><td class="mono">{{ info.mihomo || '未知' }}</td></tr>
         <tr>
           <th>规则版本</th>
           <td class="mono">{{ info.rules || '—' }}<span class="muted"> {{ rulesOrigin }}</span></td>
@@ -313,7 +333,11 @@ onMounted(load)
         </tr>
         <tr>
           <th>发布者</th>
-          <td id="publisherCell">A鱼儿</td>
+          <td id="publisherCell">
+            <a id="publisherLink" href="#" role="button" title="点击查看并复制微信号" @click.prevent="toggleWechat">A鱼儿</a>
+            <span class="wx-box" v-show="wechatShow">微信号：<b class="mono">{{ WECHAT_ID }}</b>
+              <button class="sm primary" id="copyWechatBtn" style="margin-left:8px" @click="copyWechat">一键复制</button></span>
+          </td>
         </tr>
       </tbody>
     </table>

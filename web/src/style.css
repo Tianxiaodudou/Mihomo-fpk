@@ -337,6 +337,7 @@ pre.logs { height: 360px; line-height: 1.6; white-space: pre-wrap; color: var(--
 .sw-row .sw-text > .v { font-weight: 600; }
 .sw-row .sw-text .muted { margin-top: 3px; line-height: 1.7; }
 .sw-row .switch { margin-top: 2px; }
+.wx-box { margin-left: 10px; }
 
 /* 标题+开关同行（开关紧跟标题文字）；参数块内嵌同一卡片 */
 .sw-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

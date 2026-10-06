@@ -18,6 +18,10 @@ import (
 // 默认值仅用于本地 go run/build 调试。
 var appVersion = "1.0.17"
 
+// mihomoBundled 是打包进 fpk 的内核版本号（tools/build.py 注入 -X main.mihomoBundled=<MIHOMO_VERSION>）。
+// 设置页「内核版本」始终显示它：内核没启动时也照常显示版本号，不再显示「未运行」。
+var mihomoBundled = ""
+
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -110,7 +114,7 @@ func (a *App) hVersion(w http.ResponseWriter, r *http.Request) {
 		"app":           appVersion,
 		"rules":         rulesVer,
 		"rules_origin":  rulesOrigin,
-		"mihomo":        a.mihomoVersion(),
+		"mihomo":        mihomoBundled,
 		"go":            runtime.Version(),
 		"arch":          a.Paths.Arch,
 		"gatewayPrefix": a.Paths.GatewayPrefix,
