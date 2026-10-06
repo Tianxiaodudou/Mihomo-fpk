@@ -273,8 +273,8 @@ onMounted(async () => {
 
     <div class="row" style="margin-top:8px">
       <span class="muted">
-        测速链接：点「测速 / 全部测速 / 本组测速」时探测的目标地址（默认 {{ DEFAULT_PROBE }}，也可改成 https://www.baidu.com
-        这类地址）。改完请点右上角「保存」，保存后重启应用、换浏览器都仍然生效。
+        测速链接：点<span class="kw kw-act">「测速 / 全部测速 / 本组测速」</span>时探测的目标地址（默认 {{ DEFAULT_PROBE }}，也可改成 <span class="kw kw-val">https://www.baidu.com</span>
+        这类地址）。改完请点右上角<span class="kw kw-act">「保存」</span>，<span class="kw kw-ok">保存后重启应用、换浏览器都仍然生效</span>。
       </span>
     </div>
 
@@ -285,7 +285,7 @@ onMounted(async () => {
       <button class="mini" :disabled="testing" @click="testCurrent">
         {{ pending[current] ? '测速中…' : '测速' }}
       </button>
-      <span v-if="!running" class="muted">（内核未运行，节点列表为配置文件中的静态数据）</span>
+      <span v-if="!running" class="muted">（<span class="kw kw-warn">内核未运行</span>，节点列表为配置文件中的静态数据）</span>
     </div>
 
     <div class="row" style="margin-top:10px">
@@ -295,8 +295,8 @@ onMounted(async () => {
 
     <div class="row" style="margin-top:6px">
       <span class="muted">
-        这些策略组都来自你的订阅（内核自带的 GLOBAL 组不在此显示）。点某个组里的节点 = 让该组使用该节点；
-        实际出口由「出口组」（{{ exitName || '—' }}）里选中的节点决定。
+        这些策略组都来自你的<span class="kw kw-key">订阅</span>（<span class="kw kw-warn">内核自带的 GLOBAL 组不在此显示</span>）。点某个组里的节点 = <span class="kw kw-act">让该组使用该节点</span>；
+        实际出口由<span class="kw kw-key">「出口组」</span>（{{ exitName || '—' }}）里选中的节点决定。
       </span>
     </div>
 

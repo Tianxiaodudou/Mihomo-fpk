@@ -3,107 +3,133 @@
   color-scheme: light;
   --radius: 12px;
   --trans: .2s cubic-bezier(.4, 0, .2, 1);
-  --bg: #f4f6fa;
+  --bg: #f2f7fb;
   --top-bg: rgba(255, 255, 255, .86);
-  --fg: #1f2733;
-  --fg2: #56637a;
-  --muted: #8a94a6;
+  --fg: #0b1a2b;
+  --fg2: #3c4f66;
+  --muted: #66788e;
   --panel: #ffffff;
-  --panel-soft: #fbfcfe;
-  --border: #e6eaf0;
-  --border2: #d5dbe5;
-  --border2-hover: #b9c4d4;
-  --hover: #f0f3f8;
-  --soft: #eef1f6;
-  --soft2: #f2f4f7;
-  --primary: #1668dc;
-  --primary-hover: #2a76e0;
-  --active-bg: #e8f1ff;
-  --active-border: #c6ddfd;
-  --ok: #1a7f37;
-  --ok-bg: #e6f7ea;
-  --info-fg: #1a56db;
-  --info-bg: #e8f0fe;
-  --err-fg: #c0392b;
-  --err-fg2: #a5281b;
-  --err-bg: #fdecea;
-  --err-border: #f5c6c0;
-  --danger-border: #f0c9c4;
-  --warn-fg: #b26a00;
-  --warn-fg2: #7a5b00;
-  --warn-bg: #fff4e5;
-  --notice-bg: #fff8e6;
-  --notice-border: #f2e0ac;
-  --accent-soft: #f7faff;
-  --accent-soft2: #f0f7ff;
+  --panel-soft: #f8fbff;
+  --border: #dce7f2;
+  --border2: #c8d8e8;
+  --border2-hover: #9fb8d2;
+  --hover: #eef6fd;
+  --soft: #eef3f9;
+  --soft2: #f1f5fa;
+  --primary: #0891b2;
+  --primary-hover: #0e7490;
+  --active-bg: #dff4fa;
+  --active-border: #9ad9e8;
+  --ok: #0f8a5f;
+  --ok-bg: #e2f7ef;
+  --info-fg: #1d4ed8;
+  --info-bg: #e7efff;
+  --err-fg: #c62828;
+  --err-fg2: #a31515;
+  --err-bg: #fdecec;
+  --err-border: #f6c9c9;
+  --danger-border: #f0bdbd;
+  --warn-fg: #a16207;
+  --warn-fg2: #7c4a03;
+  --warn-bg: #fff5e0;
+  --notice-bg: #fff8e3;
+  --notice-border: #f0dcae;
+  --accent-soft: #f3fbff;
+  --accent-soft2: #eaf7ff;
   --knob: #ffffff;
   --on-primary: #ffffff;
-  --term-bg: #0f172a;
-  --term-fg: #d7e3f4;
-  --term-fg2: #cfe3ff;
-  --toast-bg: #24303f;
-  --toast-fg: #ffffff;
-  --shadow: rgba(0, 0, 0, .18);
-  --shadow-card: 0 1px 2px rgba(16, 24, 40, .04), 0 10px 26px -20px rgba(16, 24, 40, .18);
-  --shadow-card-hover: 0 2px 4px rgba(16, 24, 40, .06), 0 14px 32px -22px rgba(16, 24, 40, .28);
-  --shadow-top: 0 8px 24px -22px rgba(16, 24, 40, .35);
-  --shadow-btn: 0 1px 2px rgba(16, 24, 40, .05);
-  --shadow-btn-hover: 0 4px 14px -10px rgba(16, 24, 40, .45);
-  --primary-shadow: 0 4px 14px -8px rgba(22, 104, 220, .8);
-  --ring: 0 0 0 3px rgba(22, 104, 220, .16);
-  --semi-color-border: #e6eaf0;
+  --term-bg: #061b26;
+  --term-fg: #cfe0f5;
+  --term-fg2: #7fd7e8;
+  --toast-bg: #0f2233;
+  --toast-fg: #e6f1ff;
+  --shadow: rgba(6, 32, 46, .18);
+  --shadow-card: 0 1px 2px rgba(6, 32, 46, .05), 0 10px 26px -20px rgba(6, 32, 46, .2);
+  --shadow-card-hover: 0 2px 4px rgba(6, 32, 46, .07), 0 14px 32px -22px rgba(6, 32, 46, .3);
+  --shadow-top: 0 8px 24px -22px rgba(6, 32, 46, .35);
+  --shadow-btn: 0 1px 2px rgba(6, 32, 46, .06);
+  --shadow-btn-hover: 0 4px 14px -10px rgba(6, 32, 46, .4);
+  --primary-shadow: 0 4px 14px -8px rgba(8, 145, 178, .75);
+  --ring: 0 0 0 3px rgba(8, 145, 178, .18);
+  --semi-color-border: #dce7f2;
+  /* 霓虹辅助（方案 D） */
+  --neon2: #7c3aed;
+  --amb1: rgba(8, 145, 178, .10);
+  --amb2: rgba(124, 58, 237, .07);
+  --glow: 0 0 0 1px var(--active-border), 0 6px 18px -10px var(--primary);
+  /* 指导性关键字分色（日间） */
+  --k-act: #0e7490;
+  --k-key: #6d28d9;
+  --k-val: #0f766e;
+  --k-val-bg: #e3f6f3;
+  --k-warn: #b45309;
+  --k-danger: #c62828;
+  --k-ok: #15803d;
 }
 html[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0f141b;
-  --top-bg: rgba(22, 29, 38, .85);
-  --fg: #e6edf6;
-  --fg2: #a7b4c6;
-  --muted: #8b97a8;
-  --panel: #161d26;
-  --panel-soft: #1b2430;
-  --border: #263140;
-  --border2: #33414f;
-  --border2-hover: #46556a;
-  --hover: #1e2734;
-  --soft: #212b38;
-  --soft2: #1e2734;
-  --primary: #4f9bff;
-  --primary-hover: #6cadff;
-  --active-bg: #1b3a63;
-  --active-border: #2c5a95;
-  --ok: #4ade80;
-  --ok-bg: #14351f;
-  --info-fg: #7cb0ff;
-  --info-bg: #1b2f4d;
-  --err-fg: #ff8a80;
-  --err-fg2: #ffb3ab;
-  --err-bg: #3a1c19;
-  --err-border: #5c2b26;
-  --danger-border: #5c2b26;
-  --warn-fg: #ffcc66;
+  --bg: #070b14;
+  --top-bg: rgba(10, 16, 28, .82);
+  --fg: #e6f1ff;
+  --fg2: #a9bcd6;
+  --muted: #7d8fa8;
+  --panel: #0f1626;
+  --panel-soft: #121b2d;
+  --border: #1c2740;
+  --border2: #26354f;
+  --border2-hover: #3a5273;
+  --hover: #162035;
+  --soft: #17223a;
+  --soft2: #141d31;
+  --primary: #22d3ee;
+  --primary-hover: #4ee0f5;
+  --active-bg: #0d2c3d;
+  --active-border: #1d6b86;
+  --ok: #34d399;
+  --ok-bg: #0d2f26;
+  --info-fg: #8ab4ff;
+  --info-bg: #16283f;
+  --err-fg: #ff6b81;
+  --err-fg2: #ff9aa8;
+  --err-bg: #35131c;
+  --err-border: #5a2130;
+  --danger-border: #5a2130;
+  --warn-fg: #ffc857;
   --warn-fg2: #ffd98a;
-  --warn-bg: #3a2a10;
-  --notice-bg: #33280f;
+  --warn-bg: #362708;
+  --notice-bg: #2e2308;
   --notice-border: #4d3c18;
-  --accent-soft: #1a2532;
-  --accent-soft2: #1c2c40;
+  --accent-soft: #101c2e;
+  --accent-soft2: #12253c;
   --knob: #ffffff;
-  --on-primary: #ffffff;
-  --term-bg: #0b1119;
+  --on-primary: #04141c;
+  --term-bg: #04070d;
   --term-fg: #cfe0f5;
-  --term-fg2: #cfe3ff;
-  --toast-bg: #dfe7f2;
-  --toast-fg: #10161e;
-  --shadow: rgba(0, 0, 0, .5);
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, .35), 0 12px 30px -22px rgba(0, 0, 0, .9);
-  --shadow-card-hover: 0 2px 6px rgba(0, 0, 0, .45), 0 16px 36px -22px rgba(0, 0, 0, 1);
+  --term-fg2: #9fe8ff;
+  --toast-bg: #0f2233;
+  --toast-fg: #e6f1ff;
+  --shadow: rgba(0, 0, 0, .55);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .55), 0 12px 30px -22px rgba(0, 0, 0, 1);
+  --shadow-card-hover: 0 2px 6px rgba(0, 0, 0, .6), 0 16px 36px -22px rgba(0, 0, 0, 1);
   --shadow-top: 0 10px 26px -22px rgba(0, 0, 0, .95);
-  --shadow-btn: 0 1px 2px rgba(0, 0, 0, .4);
-  --shadow-btn-hover: 0 4px 14px -10px rgba(0, 0, 0, .8);
-  --primary-shadow: 0 4px 16px -8px rgba(79, 155, 255, .6);
-  --ring: 0 0 0 3px rgba(79, 155, 255, .22);
-  --semi-color-border: #263140;
+  --shadow-btn: 0 1px 2px rgba(0, 0, 0, .45);
+  --shadow-btn-hover: 0 4px 14px -10px rgba(0, 0, 0, .85);
+  --primary-shadow: 0 4px 16px -8px rgba(34, 211, 238, .65);
+  --ring: 0 0 0 3px rgba(34, 211, 238, .25);
+  --semi-color-border: #1c2740;
+  /* 霓虹辅助（方案 D） */
+  --neon2: #a855f7;
+  --amb1: rgba(34, 211, 238, .15);
+  --amb2: rgba(168, 85, 247, .13);
+  --glow: 0 0 0 1px var(--active-border), 0 6px 22px -10px var(--primary), 0 0 16px -6px var(--primary);
+  /* 指导性关键字分色（夜间） */
+  --k-act: #22d3ee;
+  --k-key: #c4b5fd;
+  --k-val: #5eead4;
+  --k-val-bg: rgba(45, 212, 191, .14);
+  --k-warn: #ffc857;
+  --k-danger: #ff7b8a;
+  --k-ok: #4ade80;
 }
 
 * { box-sizing: border-box; }
@@ -382,3 +408,54 @@ a.link:hover { text-decoration: underline; }
   color: #fff; background: var(--primary); padding: 3px 12px; border-radius: 8px;
   font-weight: 700; text-decoration: none; display: inline-block; margin: 2px 0;
 }
+
+
+/* ===================================================================
+   方案 D · 暗夜霓虹 —— 霓虹质感增强 + 指导性文字关键字分色
+   （2026-10-06 新增，作用于全站；日间/夜间双主题各自取值）
+   =================================================================== */
+
+/* ---- 顶部氛围光（全站背景，纯装饰）---- */
+body::before {
+  content: ''; position: fixed; inset: 0 0 auto 0; height: 340px;
+  pointer-events: none; z-index: 0;
+  background:
+    radial-gradient(60% 100% at 12% 0%, var(--amb1), transparent 70%),
+    radial-gradient(50% 100% at 88% 0%, var(--amb2), transparent 70%);
+}
+.app { position: relative; z-index: 1; }
+
+/* ---- 顶栏霓虹分割线 ---- */
+.top::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px;
+  pointer-events: none; opacity: .75;
+  background: linear-gradient(90deg, transparent, var(--primary), var(--neon2), transparent);
+}
+
+/* ---- 霓虹发光：激活态 / 主按钮 / 开关 / 生效节点 ---- */
+.tab.active { box-shadow: var(--glow); }
+button.primary { box-shadow: var(--primary-shadow); }
+button.primary:hover:not(:disabled) { box-shadow: var(--glow); }
+.switch.on { box-shadow: 0 0 10px -2px var(--primary); }
+.node.active, .node-card.active {
+  box-shadow: 0 0 0 1px var(--active-border), 0 0 16px -6px var(--primary);
+}
+.badge.on { box-shadow: 0 0 10px -4px var(--ok); }
+.card:hover { box-shadow: var(--shadow-card-hover), 0 0 0 1px var(--active-border); }
+
+/* ---- 数字/地址等宽对齐 ---- */
+.stat .v, .badge, .node-meta, .mono { font-variant-numeric: tabular-nums; }
+#donateCard .ghbtn { color: var(--on-primary); }
+html[data-theme="dark"] .toast.err { color: #2a0a10; }
+
+/* ---- 指导性文字关键字分色（6 类，日夜双主题）---- */
+.kw { font-weight: 600; }
+.kw-act    { color: var(--k-act); }      /* 操作/动作：点击、填入、保存、开启 */
+.kw-key    { color: var(--k-key); }      /* 关键名词：内核、订阅、节点、端口 */
+.kw-val    { color: var(--k-val);        /* 数值/地址/参数/编码：默认色 */
+             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+             font-size: .94em; background: var(--k-val-bg);
+             border-radius: 5px; padding: 0 4px; }
+.kw-warn   { color: var(--k-warn); }     /* 注意/提醒 */
+.kw-danger { color: var(--k-danger); }   /* 禁止/失败/超时 */
+.kw-ok     { color: var(--k-ok); }       /* 推荐/正常/默认直连 */

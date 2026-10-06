@@ -206,19 +206,19 @@ onMounted(load)
     </div>
 
     <div class="muted fmt" style="margin-top:14px">
-      <div class="fmt-head"><b>支持的订阅 / 配置文件格式</b>（「添加链接」「导入文件」「粘贴内容」三种方式都会自动识别，不需要手动选格式）：</div>
+      <div class="fmt-head"><b>支持的订阅 / 配置文件格式</b>（<span class="kw kw-act">「添加链接」</span><span class="kw kw-act">「导入文件」</span><span class="kw kw-act">「粘贴内容」</span>三种方式都会<span class="kw kw-ok">自动识别</span>，不需要手动选格式）：</div>
       <ul>
-        <li><b>Clash / Mihomo YAML</b>（.yaml / .yml / .conf）：含 <span class="mono">proxies</span> 与 <span class="mono">proxy-groups</span> 的完整配置。应用只取其中的节点与策略组，分流规则用本应用自己的（订阅自带 rules 不生效）。</li>
-        <li><b>分享链接（明文）</b>（.txt / .list，一行一个，也支持空格分隔）：<span class="mono">ss://</span>、<span class="mono">ssr://</span>、<span class="mono">vmess://</span>、<span class="mono">vless://</span>、<span class="mono">trojan://</span>、<span class="mono">hysteria://</span>、<span class="mono">hysteria2://</span>、<span class="mono">hy2://</span>、<span class="mono">tuic://</span>。</li>
-        <li><b>整体 Base64 编码的分享链接</b>：机场订阅「复制订阅」得到的那串字母数字，解码后就是上面的分享链接列表；标准 / URL-safe、带不带 <span class="mono">=</span> 填充都能识别。</li>
-        <li><b>JSON 节点数组</b>（.json / .ini / .base64）：形如 <span class="mono">[{"type":"ss","server":"1.2.3.4","port":8388,...}]</span> 的 outbound 列表。</li>
-        <li><b>订阅链接（URL）</b>：用「添加链接」填入 http/https 地址，应用会自行下载并识别上述任意格式。</li>
+        <li><b>Clash / Mihomo YAML</b>（<span class="kw kw-val">.yaml / .yml / .conf</span>）：含 <span class="mono">proxies</span> 与 <span class="mono">proxy-groups</span> 的完整配置。应用只取其中的<span class="kw kw-key">节点与策略组</span>，分流规则用本应用自己的（<span class="kw kw-warn">订阅自带 rules 不生效</span>）。</li>
+        <li><b>分享链接（明文）</b>（<span class="kw kw-val">.txt / .list</span>，一行一个，也支持空格分隔）：<span class="mono">ss://</span>、<span class="mono">ssr://</span>、<span class="mono">vmess://</span>、<span class="mono">vless://</span>、<span class="mono">trojan://</span>、<span class="mono">hysteria://</span>、<span class="mono">hysteria2://</span>、<span class="mono">hy2://</span>、<span class="mono">tuic://</span>。</li>
+        <li><b>整体 Base64 编码的分享链接</b>：机场订阅<span class="kw kw-act">「复制订阅」</span>得到的那串字母数字，解码后就是上面的分享链接列表；<span class="kw kw-val">标准 / URL-safe</span>、带不带 <span class="mono">=</span> 填充都能识别。</li>
+        <li><b>JSON 节点数组</b>（<span class="kw kw-val">.json / .ini / .base64</span>）：形如 <span class="mono">[{"type":"ss","server":"1.2.3.4","port":8388,...}]</span> 的 outbound 列表。</li>
+        <li><b>订阅链接（URL）</b>：用<span class="kw kw-act">「添加链接」</span>填入 <span class="kw kw-val">http/https</span> 地址，应用会<span class="kw kw-ok">自行下载并识别</span>上述任意格式。</li>
       </ul>
-      <div class="fmt-foot">识别不出来时会提示「无法识别订阅格式」；文件建议使用 UTF-8 编码。单个订阅节点太多时可先用「全部更新」验证可用性。</div>
+      <div class="fmt-foot">识别不出来时会提示<span class="kw kw-danger">「无法识别订阅格式」</span>；文件建议使用 <span class="kw kw-val">UTF-8</span> 编码。单个订阅节点太多时可先用<span class="kw kw-act">「全部更新」</span>验证可用性。</div>
     </div>
 
     <div class="muted" style="margin-top:10px">
-      同一时间只有一个订阅处于激活状态，节点列表只显示激活订阅的节点。用卡片右上角的 ↑ ↓ 调整顺序，越靠上越优先成为「自动切换订阅」的备选。
+      同一时间只有<span class="kw kw-key">一个订阅处于激活状态</span>，节点列表只显示<span class="kw kw-key">激活订阅</span>的节点。用卡片右上角的 <span class="kw kw-val">↑ ↓</span> 调整顺序，越靠上越优先成为<span class="kw kw-act">「自动切换订阅」</span>的备选。
     </div>
     <div v-if="autoSwitch && switchInfo" class="notice" :class="{ errbox: switchErr }" style="margin-top:8px">
       自动切换：{{ switchInfo }}<span v-if="switchAt" class="muted">（{{ fmtTime(switchAt) }}）</span>
@@ -249,7 +249,7 @@ onMounted(load)
         </div>
         <div v-if="s.last_error" class="errbox" style="margin-top:8px">{{ s.last_error }}</div>
       </div>
-      <div v-if="!subs.length" class="empty">还没有订阅，点击上方「添加链接」或「导入文件」开始。</div>
+      <div v-if="!subs.length" class="empty">还没有订阅，点击上方<span class="kw kw-act">「添加链接」</span>或<span class="kw kw-act">「导入文件」</span>开始。</div>
     </div>
 
     <div v-for="(n, i) in notices" :key="i" class="notice" style="margin-top:10px">{{ n }}</div>

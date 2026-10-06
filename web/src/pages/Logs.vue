@@ -76,10 +76,10 @@ onUnmounted(close)
           <option value="error">error</option>
         </select>
         <label class="muted" style="display:flex; align-items:center; gap:4px">
-          <input type="checkbox" v-model="autoScroll" style="width:auto" />自动滚动
+          <input type="checkbox" v-model="autoScroll" style="width:auto" /><span class="kw kw-key">自动滚动</span>
         </label>
         <label class="muted" style="display:flex; align-items:center; gap:4px">
-          <input type="checkbox" v-model="paused" style="width:auto" />暂停
+          <input type="checkbox" v-model="paused" style="width:auto" /><span class="kw kw-key">暂停</span>
         </label>
         <button class="sm" @click="connect">重连</button>
         <button class="sm" @click="clear">清空</button>

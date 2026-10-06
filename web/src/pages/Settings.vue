@@ -213,7 +213,7 @@ onMounted(load)
     <div class="form">
       <label>代理端口（HTTP 与 SOCKS5 混合端口）</label>
       <input v-model="form.proxy_port" type="number" min="1" max="65535" style="width:160px" />
-      <div class="muted">保存后会自动重建配置并重载内核（内核运行中会短暂重启）。</div>
+      <div class="muted">保存后会自动<span class="kw kw-act">重建配置</span>并<span class="kw kw-act">重载内核</span>（<span class="kw kw-warn">内核运行中会短暂重启</span>）。</div>
       <div class="row" style="margin-top:14px">
         <button class="primary" :disabled="busy || !proxyDirty" @click="saveProxy">保存代理设置</button>
         <button :disabled="busy" @click="rebuild">重建配置</button>
@@ -234,11 +234,11 @@ onMounted(load)
              :aria-checked="String(!!form.auto_update_enabled)" tabindex="0"
              @click="form.auto_update_enabled = !form.auto_update_enabled"></div>
       </div>
-      <div class="muted">按下面的间隔自动重新拉取订阅，保持节点为最新；单个订阅也可以在「订阅管理」页手动更新。</div>
+      <div class="muted">按下面的间隔<span class="kw kw-act">自动重新拉取订阅</span>，保持节点为最新；单个订阅也可以在<span class="kw kw-act">「订阅管理」</span>页手动更新。</div>
       <template v-if="form.auto_update_enabled">
         <label style="margin-top:12px">更新间隔（小时）</label>
         <input id="autoUpdateHours" v-model="form.auto_update_hours" type="number" min="1" max="168" style="width:120px" />
-        <div class="muted">范围 1–168 小时，默认 <b>6</b>。</div>
+        <div class="muted">范围 <span class="kw kw-val">1–168</span> 小时，默认 <b class="kw kw-val">6</b>。</div>
       </template>
 
       <!-- 自动切换订阅：标题后紧跟开关 → 介绍 → 显隐参数（参数同属本卡片，不再单独成卡） -->
@@ -249,30 +249,30 @@ onMounted(load)
              @click="form.auto_switch = !form.auto_switch"></div>
       </div>
       <div class="muted">
-        开启后，当<b>当前激活订阅的全部节点都超时</b>（无法代理）时，自动切换到订阅列表中第一个可用的订阅；
-        切换顺序按「订阅管理」页卡片的排列顺序（可用 ↑ ↓ 调整），越靠上越优先。
-        仅在总开关已打开、内核运行中生效；刚切换过的一段时间内不会再次切换。开启后下方会出现节奏参数。
+        <span class="kw kw-act">开启</span>后，当<b>当前激活订阅的全部节点都<span class="kw kw-danger">超时</span></b>（无法代理）时，自动切换到订阅列表中第一个可用的订阅；
+        切换顺序按<span class="kw kw-key">「订阅管理」</span>页卡片的排列顺序（可用 <span class="kw kw-val">↑ ↓</span> 调整），越靠上越优先。
+        仅在<span class="kw kw-warn">总开关已打开</span>、<span class="kw kw-warn">内核运行中</span>生效；刚切换过的一段时间内不会再次切换。<span class="kw kw-act">开启</span>后下方会出现节奏参数。
       </div>
 
       <div v-if="form.auto_switch" id="swParamsBlock" class="sub-block">
         <h3 class="sub-h">自动切换参数</h3>
-        <div class="muted">「自动切换订阅」的节奏参数，按需调整，单位都是<b>秒</b>。默认值即推荐值，一般不用改。</div>
+        <div class="muted"><span class="kw kw-key">「自动切换订阅」</span>的节奏参数，按需调整，单位都是<b>秒</b>。<span class="kw kw-ok">默认值即推荐值</span>，<span class="kw kw-warn">一般不用改</span>。</div>
         <div class="form">
           <label style="margin-top:10px">检测间隔（秒）：每隔多久检查一次当前订阅还能不能用</label>
           <input v-model="swForm.switch_interval" type="number" min="10" max="600" style="width:130px" />
-          <div class="muted">范围 10–600，默认 <b>45</b>。调小＝发现更快，但探测更频繁。</div>
+          <div class="muted">范围 <span class="kw kw-val">10–600</span>，默认 <b class="kw kw-val">45</b>。<span class="kw kw-ok">调小＝发现更快</span>，但<span class="kw kw-warn">探测更频繁</span>。</div>
 
           <label style="margin-top:10px">单节点探测超时（秒）</label>
           <input v-model="swForm.switch_probe_timeout" type="number" min="1" max="30" style="width:130px" />
-          <div class="muted">范围 1–30，默认 <b>5</b>。节点在这段时间内没响应就算它超时。</div>
+          <div class="muted">范围 <span class="kw kw-val">1–30</span>，默认 <b class="kw kw-val">5</b>。节点在这段时间内没响应就算它<span class="kw kw-danger">超时</span>。</div>
 
           <label style="margin-top:10px">切换冷却时间（秒）：两次自动切换之间至少间隔多久</label>
           <input v-model="swForm.switch_cooldown" type="number" min="10" max="3600" style="width:130px" />
-          <div class="muted">范围 10–3600，默认 <b>180</b>（3 分钟）。防止网络抖动导致来回切换。</div>
+          <div class="muted">范围 <span class="kw kw-val">10–3600</span>，默认 <b class="kw kw-val">180</b>（3 分钟）。防止网络抖动导致来回切换。</div>
 
           <label style="margin-top:10px">全部不可用后的冷却时间（秒）</label>
           <input v-model="swForm.switch_fail_cooldown" type="number" min="30" max="7200" style="width:130px" />
-          <div class="muted">范围 30–7200，默认 <b>600</b>（10 分钟）。所有订阅都用不了时，隔这么久再试一次。</div>
+          <div class="muted">范围 <span class="kw kw-val">30–7200</span>，默认 <b class="kw kw-val">600</b>（10 分钟）。<span class="kw kw-danger">所有订阅都用不了</span>时，隔这么久再试一次。</div>
 
           <div class="row" style="margin-top:14px">
             <button class="primary" :disabled="swBusy || !swDirty" @click="swSave">保存参数</button>
@@ -283,7 +283,7 @@ onMounted(load)
 
       <div class="row" style="margin-top:14px">
         <button class="primary" :disabled="busy || !subsDirty" @click="saveSubs">保存订阅设置</button>
-        <span class="muted" v-if="busy">保存中…（端口变化时内核会短暂重启）</span>
+        <span class="muted" v-if="busy">保存中…（<span class="kw kw-warn">端口变化时内核会短暂重启</span>）</span>
       </div>
     </div>
   </div>
@@ -293,8 +293,8 @@ onMounted(load)
   <div class="card" id="rulesCard">
     <h2>分流规则设置</h2>
     <div class="muted">
-      <p>规则集随应用内置，作用于分流判定：内网/局域网 → 被墙域名走节点 → 国内域名与 IP 直连 → 订阅自带规则。</p>
-      <p>规则来自上游公开仓库（{{ rules.source || 'Loyalsoldier/clash-rules' }}）。若规则过期，可在此<b>直接更新，无需升级应用</b>。</p>
+      <p>规则集随应用内置，作用于<span class="kw kw-key">分流判定</span>：<span class="kw kw-val">内网/局域网</span> → <span class="kw kw-key">被墙域名走节点</span> → <span class="kw kw-ok">国内域名与 IP 直连</span> → <span class="kw kw-key">订阅自带规则</span>。</p>
+      <p>规则来自上游公开仓库（{{ rules.source || 'Loyalsoldier/clash-rules' }}）。<span class="kw kw-warn">若规则过期</span>，可在此<b>直接更新，<span class="kw kw-ok">无需升级应用</span></b>。</p>
     </div>
     <table style="margin-top:10px">
       <tbody>
@@ -328,7 +328,7 @@ onMounted(load)
           <th>开发者</th>
           <td>
             <a class="link" href="https://github.com/Tianxiaodudou/Mihomo-fpk" target="_blank" rel="noopener">Tianxiaodudou ↗</a>
-            <span class="muted">（点击打开项目主页）</span>
+            <span class="muted">（<span class="kw kw-act">点击打开项目主页</span>）</span>
           </td>
         </tr>
         <tr>
@@ -347,10 +347,10 @@ onMounted(load)
   <div class="card" id="dataCard">
     <h2>数据说明</h2>
     <div class="muted">
-      <p>· 订阅缓存与运行数据保存在应用的私有目录（/var/apps/MihomoProxy/var），升级或重装不会丢失。</p>
-      <p>· 内核仅监听本机的 Unix Socket 控制接口，不对外开放；代理端口默认监听 0.0.0.0，请仅在可信局域网内使用。</p>
-      <p>· 本应用不修改系统代理设置，「显式代理」指需要在客户端手动填写 NAS 的 IP 与端口。</p>
-      <p>· 关闭总开关会立即停止内核，但保留订阅与配置；重新开启时会自动重建配置。</p>
+      <p>· 订阅缓存与运行数据保存在应用的<span class="kw kw-key">私有目录</span>（<span class="kw kw-val">/var/apps/MihomoProxy/var</span>），<span class="kw kw-ok">升级或重装不会丢失</span>。</p>
+      <p>· 内核仅监听本机的 <span class="kw kw-val">Unix Socket</span> 控制接口，<span class="kw kw-ok">不对外开放</span>；代理端口默认监听 <span class="kw kw-val">0.0.0.0</span>，请<span class="kw kw-warn">仅在可信局域网内使用</span>。</p>
+      <p>· 本应用<span class="kw kw-warn">不修改系统代理设置</span>，<span class="kw kw-key">「显式代理」</span>指需要<span class="kw kw-act">在客户端手动填写</span> NAS 的 <span class="kw kw-val">IP 与端口</span>。</p>
+      <p>· <span class="kw kw-act">关闭总开关</span>会<span class="kw kw-warn">立即停止内核</span>，但保留订阅与配置；<span class="kw kw-act">重新开启</span>时会自动重建配置。</p>
     </div>
   </div>
 
@@ -369,7 +369,7 @@ onMounted(load)
     <div class="donate-center">
       <h2 class="donate-h2">☕ 用爱发电 · 支持一下（完全自愿）</h2>
       <p class="muted donate-p">
-        本应用<b>完全免费、无广告、无内购、无任何隐藏收费</b>，代码开源（GPL-3.0）。
+        本应用<b class="kw kw-ok">完全免费、无广告、无内购、无任何隐藏收费</b>，代码开源（<span class="kw kw-val">GPL-3.0</span>）。
       </p>
       <!-- 强调块：作者自述（醒目，防被一眼跳过） -->
       <div class="donate-note">
@@ -381,8 +381,8 @@ onMounted(load)
       </div>
       <p class="muted donate-p">
         如果你觉得它好用、帮到了你，<b>愿意的话</b>可以扫码打赏一杯奶茶钱——<br>
-        纯属<b>自愿捐赠</b>，金额随意、可随时停止，<b>与任何功能/权限无关</b>：
-        打赏不会解锁、不会加速、也不会影响后续使用，你的心意只是让作者更有动力继续维护它
+        纯属<b class="kw kw-ok">自愿捐赠</b>，金额随意、可随时停止，<b class="kw kw-ok">与任何功能/权限无关</b>：
+        <span class="kw kw-warn">打赏不会解锁、不会加速、也不会影响后续使用</span>，你的心意只是让作者更有动力继续维护它
         （毕竟为爱发电已经把饭费烧光啦 🍚😆）。
       </p>
       <div class="donate-qrs">

@@ -216,7 +216,7 @@ function fmtTime(ts) {
           <div><b>总开关</b>
             <span class="badge" :class="status.running ? 'on' : 'off'">{{ status.running ? '已开启' : '已关闭' }}</span>
           </div>
-          <div class="muted">开启后内核开始对外提供代理服务；关闭立即停止，不影响已保存的配置。</div>
+          <div class="muted"><span class="kw kw-act">开启</span>后<span class="kw kw-key">内核</span>开始对外提供<span class="kw kw-key">代理服务</span>；<span class="kw kw-act">关闭</span>立即停止，不影响已保存的配置。</div>
         </div>
       </div>
       <button class="primary" :disabled="busy" @click="updateAll">立即更新全部订阅</button>
@@ -238,7 +238,7 @@ function fmtTime(ts) {
       <div class="stat">
         <div class="k">内网使用提示</div>
         <div class="v" style="font-size:12px; font-weight:400; line-height:1.7; color:var(--fg2)">
-          手机 / 电脑把 HTTP 或 SOCKS5 代理设为左侧地址即可；端口可在「设置」中修改，国内网站默认直连、境外流量走所选节点。
+          手机 / 电脑把 <span class="kw kw-val">HTTP</span> 或 <span class="kw kw-val">SOCKS5</span> 代理设为左侧地址即可；<span class="kw kw-key">端口</span>可在<span class="kw kw-act">「设置」</span>中修改，<span class="kw kw-ok">国内网站默认直连</span>、境外流量走所选<span class="kw kw-key">节点</span>。
         </div>
       </div>
     </div>
@@ -261,13 +261,13 @@ function fmtTime(ts) {
       <div class="stat"><div class="k">延迟</div><div class="v">{{ status.running ? fmtDelay(nodeDelay) : '内核未运行' }}</div></div>
     </div>
     <div class="muted" style="margin-top:8px">
-      境外流量经由该节点，国内网站默认直连；延迟为最近一次测速结果，可点「测速」重新测量。
+      境外流量经由该<span class="kw kw-key">节点</span>，<span class="kw kw-ok">国内网站默认直连</span>；<span class="kw kw-key">延迟</span>为最近一次测速结果，可点<span class="kw kw-act">「测速」</span>重新测量。
     </div>
   </div>
 
   <div class="card">
     <div class="row between">
-      <h2 style="margin:0">网络测试 <small>经当前生效节点访问下列站点</small></h2>
+      <h2 style="margin:0">网络测试 <small>经当前<span class="kw kw-key">生效节点</span>访问下列站点</small></h2>
       <button :disabled="!!testingSite" @click="testSites">全部测试</button>
     </div>
     <div class="stat-grid" style="margin-top:8px">
@@ -282,7 +282,7 @@ function fmtTime(ts) {
       </div>
     </div>
     <div class="muted" style="margin-top:8px">
-      测试方式是让「当前生效节点」分别去访问上述站点并返回真实往返延迟；显示「超时」表示该节点访问该站点不通或过慢。
+      测试方式是让<span class="kw kw-key">「当前生效节点」</span>分别去访问上述站点并返回真实往返<span class="kw kw-key">延迟</span>；显示<span class="kw kw-danger">「超时」</span>表示该节点访问该站点<span class="kw kw-danger">不通或过慢</span>。
     </div>
   </div>
 
