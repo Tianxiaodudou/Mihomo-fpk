@@ -16,11 +16,7 @@ import (
 //
 // 依赖内核的延迟探测接口 /proxies/{name}/delay（内核未运行时本功能不工作）。
 const (
-	autoSwitchInterval = 45 * time.Second  // 检测节拍
-	autoSwitchCooldown = 3 * time.Minute   // 两次自动切换之间的最小间隔
-	autoSwitchFailCool = 10 * time.Minute  // 一轮全部失败后的冷却（避免频繁折腾）
-	autoSwitchProbeTO  = 5 * time.Second   // 单节点探测超时
-	autoSwitchProbeCon = 8                 // 并发探测数
+	autoSwitchProbeCon = 8 // 并发探测数（固定值）
 )
 
 // 便于单元测试替换的探测钩子。
@@ -115,7 +111,7 @@ func (a *App) anyAlive(names []string, probeURL string, to time.Duration) bool {
 }
 
 // subUsable 判断某个订阅是否可用（更新缓存 → 重建配置 → 探测节点）。
-func (a *App) subUsable(sub *Subscription, probeURL string) bool {
+func (a *App) subUsable(sub *Subscription, probeURL string, to time.Duration) bool {
 	if _, err := os.Stat(a.cacheFile(sub.ID)); err != nil {
 		// 备选订阅可能从未拉取过，先尝试在线更新一次
 		if _, err := a.UpdateSubscription(sub.ID); err != nil {
@@ -125,7 +121,15 @@ func (a *App) subUsable(sub *Subscription, probeURL string) bool {
 	if _, err := a.RebuildAndReload(); err != nil {
 		return false
 	}
-	return a.anyAlive(a.activeNodeNames(), probeURL, autoSwitchProbeTO)
+	return a.anyAlive(a.activeNodeNames(), probeURL, to)
+}
+
+// durText 把时长写成人话（整除分钟显示分钟，否则显示秒）。
+func durText(d time.Duration) string {
+	if d%time.Minute == 0 {
+		return fmt.Sprintf("%d 分钟", int(d/time.Minute))
+	}
+	return fmt.Sprintf("%d 秒", int(d/time.Second))
 }
 
 // setSwitchInfo 记录最近一次自动切换的说明，供界面展示。
@@ -158,19 +162,26 @@ func (a *App) autoSwitchTick() {
 	if !s.AutoSwitch {
 		return
 	}
+	interval, probeTO, cooldown, failCool := s.SwitchParams()
 	a.swMu.Lock()
 	if a.swBusy {
 		a.swMu.Unlock()
 		return
 	}
-	cooldown := int64(autoSwitchCooldown / time.Second)
-	if a.swLastFail {
-		cooldown = int64(autoSwitchFailCool / time.Second)
-	}
-	if a.swAt > 0 && nowUnix()-a.swAt < cooldown {
+	// 真正的检测间隔由用户在设置页配置（默认 45 秒）；调用方节拍更密，这里自行限流
+	if a.swCheckAt > 0 && nowUnix()-a.swCheckAt < int64(interval/time.Second) {
 		a.swMu.Unlock()
 		return
 	}
+	cd := int64(cooldown / time.Second)
+	if a.swLastFail {
+		cd = int64(failCool / time.Second)
+	}
+	if a.swAt > 0 && nowUnix()-a.swAt < cd {
+		a.swMu.Unlock()
+		return
+	}
+	a.swCheckAt = nowUnix()
 	a.swBusy = true
 	a.swMu.Unlock()
 	defer func() {
@@ -191,7 +202,7 @@ func (a *App) autoSwitchTick() {
 		return
 	}
 	// 当前订阅还有可用节点 → 什么都不做
-	if a.anyAlive(names, s.ProbeURL, autoSwitchProbeTO) {
+	if a.anyAlive(names, s.ProbeURL, probeTO) {
 		return
 	}
 	a.setSwitchInfo(fmt.Sprintf("检测到「%s」的全部节点均不可用，正在尝试切换到其它订阅…", cur.Name), false)
@@ -214,7 +225,7 @@ func (a *App) autoSwitchTick() {
 		if _, err := a.Subs.Activate(subs[i].ID, true); err != nil {
 			return false
 		}
-		return a.subUsable(subs[i], s.ProbeURL)
+		return a.subUsable(subs[i], s.ProbeURL, probeTO)
 	}
 	target := decideSwitch(cidx, len(subs), usable)
 	if target < 0 {
@@ -222,7 +233,7 @@ func (a *App) autoSwitchTick() {
 		if _, err := a.Subs.Activate(cur.ID, true); err == nil {
 			_, _ = a.RebuildAndReload()
 		}
-		a.setSwitchInfo(fmt.Sprintf("所有订阅的节点均不可用，已保持在「%s」（%d 分钟内不再重试）", cur.Name, int(autoSwitchFailCool/time.Minute)), true)
+		a.setSwitchInfo(fmt.Sprintf("所有订阅的节点均不可用，已保持在「%s」（%s内不再重试）", cur.Name, durText(failCool)), true)
 		a.markSwitch(true)
 		return
 	}

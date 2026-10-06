@@ -29,6 +29,7 @@ type App struct {
 	swInfo     string
 	swInfoAt   int64
 	swInfoErr  bool
+	swCheckAt  int64 // 上次实际检测（探测）的时间，用于按用户配置的间隔限流
 }
 
 func NewApp(p *Paths) *App {
@@ -268,8 +269,8 @@ func (a *App) OnStartup() {
 func (a *App) AutoLoop(stop <-chan struct{}) {
 	tick := time.NewTicker(10 * time.Minute)
 	defer tick.Stop()
-	// 自动切换订阅的独立节拍：比自动更新更频繁
-	swtick := time.NewTicker(autoSwitchInterval)
+	// 自动切换订阅的检测节拍：每 5 秒醒一次，真正的间隔由设置页的「检测间隔」决定
+	swtick := time.NewTicker(5 * time.Second)
 	defer swtick.Stop()
 	for {
 		select {

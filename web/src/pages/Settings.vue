@@ -6,6 +6,13 @@ const notify = inject('notify')
 const loadStatus = inject('loadStatus')
 
 const form = ref({ proxy_port: 7890, auto_update_enabled: true, auto_update_hours: 6, auto_switch: false })
+// 自动切换订阅的节奏参数（单位：秒），默认值即推荐值
+const SW_DEFAULTS = { switch_interval: 45, switch_probe_timeout: 5, switch_cooldown: 180, switch_fail_cooldown: 600 }
+const swForm = ref({ ...SW_DEFAULTS })
+const swSaved = ref({ ...SW_DEFAULTS })
+const swLoaded = ref(false)
+const swBusy = ref(false)
+const swDirty = computed(() => Object.keys(SW_DEFAULTS).some(k => Number(swForm.value[k]) !== Number(swSaved.value[k])))
 const info = ref({})
 const cfg = ref('')
 const showCfg = ref(false)
@@ -55,6 +62,17 @@ async function load() {
       auto_update_hours: s.auto_update_hours,
       auto_switch: !!s.auto_switch
     }
+    // 参数卡片有未保存的修改时不覆盖，避免「保存设置」把用户正在编辑的值冲掉
+    if (!swLoaded.value || !swDirty.value) {
+      swForm.value = {
+        switch_interval: s.switch_interval,
+        switch_probe_timeout: s.switch_probe_timeout,
+        switch_cooldown: s.switch_cooldown,
+        switch_fail_cooldown: s.switch_fail_cooldown
+      }
+      swSaved.value = { ...swForm.value }
+    }
+    swLoaded.value = true
   } catch (e) { notify(e.message, true) }
   try { info.value = await api.get('/api/version') } catch (e) { /* 忽略 */ }
   await loadRules()
@@ -75,6 +93,26 @@ async function save() {
   } catch (e) {
     notify(e.message, true)
   } finally { busy.value = false }
+}
+
+async function swSave() {
+  swBusy.value = true
+  try {
+    await api.put('/api/settings', {
+      switch_interval: Number(swForm.value.switch_interval),
+      switch_probe_timeout: Number(swForm.value.switch_probe_timeout),
+      switch_cooldown: Number(swForm.value.switch_cooldown),
+      switch_fail_cooldown: Number(swForm.value.switch_fail_cooldown)
+    })
+    notify('自动切换参数已保存')
+    swSaved.value = { ...swForm.value }
+  } catch (e) {
+    notify(e.message, true)
+  } finally { swBusy.value = false }
+}
+
+function swReset() {
+  swForm.value = { ...SW_DEFAULTS }
 }
 
 async function rebuild() {
@@ -119,7 +157,7 @@ onMounted(load)
       <div class="muted">
         开启后，当<b>当前激活订阅的全部节点都超时</b>（无法代理）时，自动切换到订阅列表中第一个可用的订阅；
         切换顺序按「订阅管理」页卡片的排列顺序（可用 ↑ ↓ 调整），越靠上越优先。
-        仅在总开关已打开、内核运行中生效；刚切换过的 3 分钟内不会再次切换。
+        仅在总开关已打开、内核运行中生效；刚切换过的 3 分钟内不会再次切换。开关打开后下方会出现节奏参数卡片。
       </div>
 
       <div class="row" style="margin-top:14px">
@@ -129,6 +167,35 @@ onMounted(load)
       </div>
     </div>
     <pre v-if="showCfg" class="codebox">{{ cfg }}</pre>
+  </div>
+
+  <div class="card" v-if="form.auto_switch">
+    <h2>自动切换参数</h2>
+    <div class="muted">
+      上面「自动切换订阅」的节奏参数，按需调整，单位都是<b>秒</b>。默认值即推荐值，一般不用改。
+    </div>
+    <div class="form">
+      <label>检测间隔（秒）：每隔多久检查一次当前订阅还能不能用</label>
+      <input v-model="swForm.switch_interval" type="number" min="10" max="600" style="width:130px" />
+      <div class="muted">范围 10–600，默认 <b>45</b>。调小＝发现更快，但探测更频繁。</div>
+
+      <label style="margin-top:10px">单节点探测超时（秒）</label>
+      <input v-model="swForm.switch_probe_timeout" type="number" min="1" max="30" style="width:130px" />
+      <div class="muted">范围 1–30，默认 <b>5</b>。节点在这段时间内没响应就算它超时。</div>
+
+      <label style="margin-top:10px">切换冷却时间（秒）：两次自动切换之间至少间隔多久</label>
+      <input v-model="swForm.switch_cooldown" type="number" min="10" max="3600" style="width:130px" />
+      <div class="muted">范围 10–3600，默认 <b>180</b>（3 分钟）。防止网络抖动导致来回切换。</div>
+
+      <label style="margin-top:10px">全部不可用后的冷却时间（秒）</label>
+      <input v-model="swForm.switch_fail_cooldown" type="number" min="30" max="7200" style="width:130px" />
+      <div class="muted">范围 30–7200，默认 <b>600</b>（10 分钟）。所有订阅都用不了时，隔这么久再试一次。</div>
+
+      <div class="row" style="margin-top:14px">
+        <button class="primary" :disabled="swBusy || !swDirty" @click="swSave">保存参数</button>
+        <button :disabled="swBusy" @click="swReset">填回默认值</button>
+      </div>
+    </div>
   </div>
 
   <div class="card">

@@ -534,6 +534,10 @@ func (a *App) hSettingsSet(w http.ResponseWriter, r *http.Request) {
 		AutoUpdateHours   *int    `json:"auto_update_hours"`
 		ProbeURL          *string `json:"probe_url"`
 		AutoSwitch        *bool   `json:"auto_switch"`
+		SwitchInterval    *int    `json:"switch_interval"`
+		SwitchProbeTO     *int    `json:"switch_probe_timeout"`
+		SwitchCool        *int    `json:"switch_cooldown"`
+		SwitchFailCool    *int    `json:"switch_fail_cooldown"`
 	}
 	b, _ := readBody(r, 1<<16)
 	if err := json.Unmarshal(b, &body); err != nil {
@@ -570,6 +574,38 @@ func (a *App) hSettingsSet(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.AutoSwitch != nil {
 		cur.AutoSwitch = *body.AutoSwitch
+	}
+	// 自动切换订阅的四个可调参数（秒）
+	rng := []struct {
+		v      *int
+		lo, hi int
+		label  string
+	}{
+		{body.SwitchInterval, MinSwitchInterval, MaxSwitchInterval, "检测间隔"},
+		{body.SwitchProbeTO, MinSwitchProbeTO, MaxSwitchProbeTO, "单节点探测超时"},
+		{body.SwitchCool, MinSwitchCool, MaxSwitchCool, "切换冷却时间"},
+		{body.SwitchFailCool, MinSwitchFailCool, MaxSwitchFailCool, "全部不可用后的冷却时间"},
+	}
+	for _, it := range rng {
+		if it.v == nil {
+			continue
+		}
+		if *it.v < it.lo || *it.v > it.hi {
+			writeErr(w, 400, fmt.Sprintf("%s需在 %d-%d 秒之间", it.label, it.lo, it.hi))
+			return
+		}
+	}
+	if body.SwitchInterval != nil {
+		cur.SwitchInterval = *body.SwitchInterval
+	}
+	if body.SwitchProbeTO != nil {
+		cur.SwitchProbeTO = *body.SwitchProbeTO
+	}
+	if body.SwitchCool != nil {
+		cur.SwitchCool = *body.SwitchCool
+	}
+	if body.SwitchFailCool != nil {
+		cur.SwitchFailCool = *body.SwitchFailCool
 	}
 	if err := saveSettings(cur); err != nil {
 		writeErr(w, 500, err.Error())

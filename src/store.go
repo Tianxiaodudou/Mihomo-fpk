@@ -13,6 +13,23 @@ import (
 // DefaultProbeURL 节点测速（探测）默认目标地址：返回 204 的轻量地址。
 const DefaultProbeURL = "http://www.gstatic.com/generate_204"
 
+// 自动切换订阅的可调参数：下列默认值即 1.0.27 的既有行为。
+const (
+	DefaultSwitchInterval = 45  // 检测节拍（秒）
+	DefaultSwitchProbeTO  = 5   // 单节点探测超时（秒）
+	DefaultSwitchCool     = 180 // 两次自动切换之间的最小间隔（秒）
+	DefaultSwitchFailCool = 600 // 一轮全部订阅都不可用后的冷却（秒）
+
+	MinSwitchInterval = 10
+	MaxSwitchInterval = 600
+	MinSwitchProbeTO  = 1
+	MaxSwitchProbeTO  = 30
+	MinSwitchCool     = 15
+	MaxSwitchCool     = 3600
+	MinSwitchFailCool = 30
+	MaxSwitchFailCool = 7200
+)
+
 type Settings struct {
 	ProxyPort         int    `json:"proxy_port"`
 	AutoUpdateEnabled bool   `json:"auto_update_enabled"`
@@ -21,10 +38,33 @@ type Settings struct {
 	ProbeURL          string `json:"probe_url"`
 	// AutoSwitch 自动切换订阅：当前激活订阅的节点全部不可用时，自动切换到下一个订阅（按订阅列表顺序）。
 	AutoSwitch bool `json:"auto_switch"`
+	// 自动切换订阅的四个可调参数（秒）。0/越界时回落到默认值。
+	SwitchInterval int `json:"switch_interval"` // 检测节拍，默认 45
+	SwitchProbeTO  int `json:"switch_probe_timeout"`
+	SwitchCool     int `json:"switch_cooldown"`      // 默认 180
+	SwitchFailCool int `json:"switch_fail_cooldown"` // 默认 600
+}
+
+// SwitchParams 返回已钳制的自动切换参数（时长）。
+func (s *Settings) SwitchParams() (interval, probeTO, cool, failCool time.Duration) {
+	clamp := func(v, def, lo, hi int) int {
+		if v < lo || v > hi {
+			return def
+		}
+		return v
+	}
+	return time.Duration(clamp(s.SwitchInterval, DefaultSwitchInterval, MinSwitchInterval, MaxSwitchInterval)) * time.Second,
+		time.Duration(clamp(s.SwitchProbeTO, DefaultSwitchProbeTO, MinSwitchProbeTO, MaxSwitchProbeTO)) * time.Second,
+		time.Duration(clamp(s.SwitchCool, DefaultSwitchCool, MinSwitchCool, MaxSwitchCool)) * time.Second,
+		time.Duration(clamp(s.SwitchFailCool, DefaultSwitchFailCool, MinSwitchFailCool, MaxSwitchFailCool)) * time.Second
 }
 
 func defaultSettings() *Settings {
-	return &Settings{ProxyPort: 7890, AutoUpdateEnabled: true, AutoUpdateHours: 6, ProbeURL: DefaultProbeURL}
+	return &Settings{
+		ProxyPort: 7890, AutoUpdateEnabled: true, AutoUpdateHours: 6, ProbeURL: DefaultProbeURL,
+		SwitchInterval: DefaultSwitchInterval, SwitchProbeTO: DefaultSwitchProbeTO,
+		SwitchCool: DefaultSwitchCool, SwitchFailCool: DefaultSwitchFailCool,
+	}
 }
 
 // ---------- 订阅 ----------
@@ -267,6 +307,19 @@ func loadSettings() *Settings {
 	}
 	if s.ProbeURL == "" {
 		s.ProbeURL = DefaultProbeURL
+	}
+	// 自动切换参数：旧配置文件没有这些键（=0）或越界时回落到默认值。
+	if s.SwitchInterval < MinSwitchInterval || s.SwitchInterval > MaxSwitchInterval {
+		s.SwitchInterval = DefaultSwitchInterval
+	}
+	if s.SwitchProbeTO < MinSwitchProbeTO || s.SwitchProbeTO > MaxSwitchProbeTO {
+		s.SwitchProbeTO = DefaultSwitchProbeTO
+	}
+	if s.SwitchCool < MinSwitchCool || s.SwitchCool > MaxSwitchCool {
+		s.SwitchCool = DefaultSwitchCool
+	}
+	if s.SwitchFailCool < MinSwitchFailCool || s.SwitchFailCool > MaxSwitchFailCool {
+		s.SwitchFailCool = DefaultSwitchFailCool
 	}
 	return s
 }
