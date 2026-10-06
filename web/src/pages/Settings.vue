@@ -47,33 +47,6 @@ function rememberAppVer(v) {
   try { localStorage.setItem(APPVER_KEY, v) } catch (e) { /* 忽略：无痕模式下 localStorage 可能不可用 */ }
 }
 
-// 发布者：点击「A鱼儿」显示微信号，并支持一键复制
-const WECHAT_ID = 'telegram96'
-const wechatShow = ref(false)
-function toggleWechat() { wechatShow.value = !wechatShow.value }
-async function copyWechat() {
-  const text = WECHAT_ID
-  let ok = false
-  try {
-    if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(text); ok = true }
-  } catch (e) { ok = false }
-  if (!ok) {
-    // 兜底：宿主内嵌浏览器 / 非安全上下文可能没有剪贴板 API
-    try {
-      const ta = document.createElement('textarea')
-      ta.value = text
-      ta.style.position = 'fixed'
-      ta.style.opacity = '0'
-      document.body.appendChild(ta)
-      ta.select()
-      ok = document.execCommand('copy')
-      document.body.removeChild(ta)
-    } catch (e) { ok = false }
-  }
-  if (ok) notify('已复制微信号 ' + text)
-  else notify('复制失败，请手动选中复制：' + text, true)
-}
-
 // 规则集名称 -> 中文说明（顺序与后端 ruleProviderDefs 一致）
 const RULE_LABELS = {
   gfw: '被墙域名（走节点）',
@@ -345,13 +318,7 @@ onMounted(load)
         </tr>
         <tr>
           <th>发布者</th>
-          <td>
-            <a class="link" id="publisherLink" href="#" role="button" title="微信号：telegram96（点击查看并复制）" @click.prevent="toggleWechat">A鱼儿</a>
-            <span v-if="wechatShow" class="wx-box">
-              微信号：<b class="mono">{{ WECHAT_ID }}</b>
-              <button class="sm primary" id="copyWechatBtn" style="margin-left:8px" @click="copyWechat">一键复制</button>
-            </span>
-          </td>
+          <td id="publisherCell">A鱼儿</td>
         </tr>
       </tbody>
     </table>

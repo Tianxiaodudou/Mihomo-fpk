@@ -348,7 +348,6 @@ pre.logs { height: 360px; line-height: 1.6; white-space: pre-wrap; color: var(--
 /* ===== 链接 ===== */
 a.link { color: var(--primary); text-decoration: none; }
 a.link:hover { text-decoration: underline; }
-.wx-box { margin-left: 10px; }
 
 /* ===== 捐赠卡片（参考 music-meta-web 的「支持一下」卡片，配色改用主题变量以适配深色模式）===== */
 #donateCard { border: 2px solid var(--primary); }
