@@ -4,6 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>显式代理</title>
+    <script>
+      // 主题兜底：在样式表与主脚本加载前就把主题落到 <html data-theme>，避免首屏闪白。
+      // 规则与 src/App.vue 保持一致：全新安装（无本地偏好记录）默认「夜间模式」；只有用户明确选过日间才用日间。
+      (function () {
+        var t = null
+        try { t = localStorage.getItem('mihomo-theme') } catch (e) { /* 无痕模式等：忽略 */ }
+        document.documentElement.setAttribute('data-theme', t === 'light' ? 'light' : 'dark')
+      })()
+    </script>
   </head>
   <body>
     <div id="app"><div id="boot-fallback" style="padding:24px;font:14px/1.7 system-ui,-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:#666">界面加载中…</div></div>
