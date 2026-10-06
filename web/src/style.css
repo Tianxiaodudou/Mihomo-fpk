@@ -329,3 +329,50 @@ pre.logs { height: 360px; line-height: 1.6; white-space: pre-wrap; color: var(--
   .theme-toggle { position: static; transform: none; margin-left: 6px; }
   .theme-toggle:active { transform: scale(.97); }
 }
+
+/* ===== 设置页：开关行（左说明 / 右开关）===== */
+.sw-row { align-items: flex-start; gap: 16px; padding: 10px 0; border-top: 1px solid var(--soft); }
+.sw-row:first-child { border-top: none; padding-top: 0; }
+.sw-row .sw-text { min-width: 0; }
+.sw-row .sw-text > .v { font-weight: 600; }
+.sw-row .sw-text .muted { margin-top: 3px; line-height: 1.7; }
+.sw-row .switch { margin-top: 2px; }
+
+/* ===== 订阅页：支持的配置格式说明 ===== */
+.fmt { line-height: 1.8; }
+.fmt ul { margin: 6px 0 0; padding-left: 20px; }
+.fmt li { margin-bottom: 4px; }
+.fmt-head { color: var(--fg2); }
+.fmt-foot { margin-top: 6px; }
+
+/* ===== 链接 ===== */
+a.link { color: var(--primary); text-decoration: none; }
+a.link:hover { text-decoration: underline; }
+.wx-box { margin-left: 10px; }
+
+/* ===== 捐赠卡片（参考 music-meta-web 的「支持一下」卡片，配色改用主题变量以适配深色模式）===== */
+#donateCard { border: 2px solid var(--primary); }
+#donateCard .donate-open {
+  background: var(--accent-soft2); border: 1px solid var(--active-border);
+  border-radius: 10px; padding: 12px 16px; margin-bottom: 14px; text-align: left;
+}
+#donateCard .donate-open-title { font-size: 17px; font-weight: 800; color: var(--primary); margin-bottom: 6px; }
+#donateCard .donate-center { text-align: center; }
+#donateCard .donate-h2 { color: #b8860b; margin: 2px 0 6px; font-size: 15px; }
+#donateCard .donate-p { max-width: 760px; margin: 4px auto; line-height: 1.7; }
+#donateCard .donate-note {
+  background: var(--notice-bg); border: 2px solid var(--notice-border); color: var(--warn-fg2);
+  border-radius: 12px; padding: 12px 18px; margin: 6px auto 10px; max-width: 760px;
+  text-align: left; box-shadow: 0 2px 8px rgba(224, 168, 0, .18); font-size: 13px;
+}
+#donateCard .donate-note b { color: inherit; }
+#donateCard .donate-note small { display: block; margin-top: 4px; color: var(--muted); font-size: 12.5px; }
+#donateCard .donate-qrs { display: flex; justify-content: center; gap: 26px; flex-wrap: wrap; margin: 10px 0 4px; }
+#donateCard .donate-qr img {
+  height: 280px; width: auto; border-radius: 8px; background: #fff;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, .15);
+}
+#donateCard .ghbtn {
+  color: #fff; background: var(--primary); padding: 3px 12px; border-radius: 8px;
+  font-weight: 700; text-decoration: none; display: inline-block; margin: 2px 0;
+}

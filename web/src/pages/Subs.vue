@@ -91,15 +91,6 @@ function fileBaseName(p) {
   return s.replace(/\.[^.]+$/, '')
 }
 
-function readFileText(f) {
-  return new Promise((res, rej) => {
-    const fr = new FileReader()
-    fr.onload = () => res(String(fr.result))
-    fr.onerror = () => rej(new Error('读取文件失败'))
-    fr.readAsText(f)
-  })
-}
-
 async function importPasted() {
   if (!pasteText.value.trim()) return notify('请粘贴订阅内容', true)
   try {
@@ -107,19 +98,6 @@ async function importPasted() {
     notify('已导入：' + (r.sub ? r.sub.name : ''))
     if (r.errors && r.errors.length) notify(r.errors.join('；'), true)
     pasteShow.value = false; pasteName.value = ''; pasteText.value = ''
-    await load(); await loadStatus()
-  } catch (e) { notify(e.message, true) }
-}
-
-async function onDrop(ev) {
-  const files = ev.dataTransfer && ev.dataTransfer.files
-  if (!files || !files.length) return
-  const f = files[0]
-  try {
-    const text = await readFileText(f)
-    const r = await api.post('/api/subs/import', { name: f.name, content: text })
-    notify('已导入：' + (r.sub ? r.sub.name : ''))
-    if (r.errors && r.errors.length) notify(r.errors.join('；'), true)
     await load(); await loadStatus()
   } catch (e) { notify(e.message, true) }
 }
@@ -194,7 +172,7 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="card" @dragover.prevent @drop.prevent="onDrop">
+  <div class="card">
     <div class="row between">
       <h2 style="margin:0">订阅管理</h2>
       <div class="row">
@@ -227,7 +205,17 @@ onMounted(load)
       </div>
     </div>
 
-    <div class="muted" style="margin-top:10px">提示：也可以把订阅文件（.txt / .yaml / .json / base64）直接拖拽到本页面导入。</div>
+    <div class="muted fmt" style="margin-top:14px">
+      <div class="fmt-head"><b>支持的订阅 / 配置文件格式</b>（「添加链接」「导入文件」「粘贴内容」三种方式都会自动识别，不需要手动选格式）：</div>
+      <ul>
+        <li><b>Clash / Mihomo YAML</b>（.yaml / .yml / .conf）：含 <span class="mono">proxies</span> 与 <span class="mono">proxy-groups</span> 的完整配置。应用只取其中的节点与策略组，分流规则用本应用自己的（订阅自带 rules 不生效）。</li>
+        <li><b>分享链接（明文）</b>（.txt / .list，一行一个，也支持空格分隔）：<span class="mono">ss://</span>、<span class="mono">ssr://</span>、<span class="mono">vmess://</span>、<span class="mono">vless://</span>、<span class="mono">trojan://</span>、<span class="mono">hysteria://</span>、<span class="mono">hysteria2://</span>、<span class="mono">hy2://</span>、<span class="mono">tuic://</span>。</li>
+        <li><b>整体 Base64 编码的分享链接</b>：机场订阅「复制订阅」得到的那串字母数字，解码后就是上面的分享链接列表；标准 / URL-safe、带不带 <span class="mono">=</span> 填充都能识别。</li>
+        <li><b>JSON 节点数组</b>（.json / .ini / .base64）：形如 <span class="mono">[{"type":"ss","server":"1.2.3.4","port":8388,...}]</span> 的 outbound 列表。</li>
+        <li><b>订阅链接（URL）</b>：用「添加链接」填入 http/https 地址，应用会自行下载并识别上述任意格式。</li>
+      </ul>
+      <div class="fmt-foot">识别不出来时会提示「无法识别订阅格式」；文件建议使用 UTF-8 编码。单个订阅节点太多时可先用「全部更新」验证可用性。</div>
+    </div>
 
     <div class="muted" style="margin-top:10px">
       同一时间只有一个订阅处于激活状态，节点列表只显示激活订阅的节点。用卡片右上角的 ↑ ↓ 调整顺序，越靠上越优先成为「自动切换订阅」的备选。

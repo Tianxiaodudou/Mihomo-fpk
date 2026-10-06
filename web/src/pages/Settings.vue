@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, inject, onMounted } from 'vue'
 import { api } from '../api'
+import { DONATE_WX, DONATE_ALI } from '../donate'
 
 const notify = inject('notify')
 const loadStatus = inject('loadStatus')
@@ -18,6 +19,60 @@ const cfg = ref('')
 const showCfg = ref(false)
 const busy = ref(false)
 const rules = ref({})
+
+// 代理/订阅两张卡片：「保存」按钮只在值有改动时可点（与自动切换参数卡片一致的脏值判断）
+const saved = ref(null)
+const proxyDirty = computed(() => !saved.value || Number(form.value.proxy_port) !== Number(saved.value.proxy_port))
+const subsDirty = computed(() => !saved.value ||
+  !!form.value.auto_update_enabled !== !!saved.value.auto_update_enabled ||
+  Number(form.value.auto_update_hours) !== Number(saved.value.auto_update_hours) ||
+  !!form.value.auto_switch !== !!saved.value.auto_switch)
+function snapForm() {
+  saved.value = {
+    proxy_port: Number(form.value.proxy_port),
+    auto_update_enabled: !!form.value.auto_update_enabled,
+    auto_update_hours: Number(form.value.auto_update_hours),
+    auto_switch: !!form.value.auto_switch
+  }
+}
+
+// 「版本信息」里的应用版本：始终显示版本号。取值优先级 = 接口返回值 > 上次记住的值，
+// 不再因为内核未运行 / 接口一时取不到就把版本号显示成「—」。
+const APPVER_KEY = 'mihomo.appver'
+const appVer = ref('')
+try { appVer.value = localStorage.getItem(APPVER_KEY) || '' } catch (e) { appVer.value = '' }
+function rememberAppVer(v) {
+  if (!v) return
+  appVer.value = v
+  try { localStorage.setItem(APPVER_KEY, v) } catch (e) { /* 忽略：无痕模式下 localStorage 可能不可用 */ }
+}
+
+// 发布者：点击「A鱼儿」显示微信号，并支持一键复制
+const WECHAT_ID = 'telegram96'
+const wechatShow = ref(false)
+function toggleWechat() { wechatShow.value = !wechatShow.value }
+async function copyWechat() {
+  const text = WECHAT_ID
+  let ok = false
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(text); ok = true }
+  } catch (e) { ok = false }
+  if (!ok) {
+    // 兜底：宿主内嵌浏览器 / 非安全上下文可能没有剪贴板 API
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+    } catch (e) { ok = false }
+  }
+  if (ok) notify('已复制微信号 ' + text)
+  else notify('复制失败，请手动选中复制：' + text, true)
+}
 
 // 规则集名称 -> 中文说明（顺序与后端 ruleProviderDefs 一致）
 const RULE_LABELS = {
@@ -72,22 +127,45 @@ async function load() {
       }
       swSaved.value = { ...swForm.value }
     }
+    if (!saved.value) snapForm()
     swLoaded.value = true
   } catch (e) { notify(e.message, true) }
-  try { info.value = await api.get('/api/version') } catch (e) { /* 忽略 */ }
+  try {
+    info.value = await api.get('/api/version')
+    rememberAppVer(info.value && info.value.app)
+  } catch (e) { /* 忽略：版本号仍用上次记住的值显示 */ }
   await loadRules()
 }
 
-async function save() {
+// 代理设置卡片：只保存端口
+async function saveProxy() {
+  busy.value = true
+  try {
+    const r = await api.put('/api/settings', { proxy_port: Number(form.value.proxy_port) })
+    notify(r.message || '代理设置已保存')
+    if (saved.value) saved.value.proxy_port = Number(form.value.proxy_port)
+    if (r.errors && r.errors.length) notify(r.errors.join('；'), true)
+    await load(); await loadStatus()
+  } catch (e) {
+    notify(e.message, true)
+  } finally { busy.value = false }
+}
+
+// 订阅设置卡片：定时自动更新订阅 + 自动切换订阅
+async function saveSubs() {
   busy.value = true
   try {
     const r = await api.put('/api/settings', {
-      proxy_port: Number(form.value.proxy_port),
       auto_update_enabled: !!form.value.auto_update_enabled,
       auto_update_hours: Number(form.value.auto_update_hours),
       auto_switch: !!form.value.auto_switch
     })
-    notify(r.message || '设置已保存')
+    notify(r.message || '订阅设置已保存')
+    if (saved.value) {
+      saved.value.auto_update_enabled = !!form.value.auto_update_enabled
+      saved.value.auto_update_hours = Number(form.value.auto_update_hours)
+      saved.value.auto_switch = !!form.value.auto_switch
+    }
     if (r.errors && r.errors.length) notify(r.errors.join('；'), true)
     await load(); await loadStatus()
   } catch (e) {
@@ -136,32 +214,15 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="card">
+  <!-- ===================== 1. 代理设置 ===================== -->
+  <div class="card" id="proxyCard">
     <h2>代理设置</h2>
     <div class="form">
       <label>代理端口（HTTP 与 SOCKS5 混合端口）</label>
       <input v-model="form.proxy_port" type="number" min="1" max="65535" style="width:160px" />
       <div class="muted">保存后会自动重建配置并重载内核（内核运行中会短暂重启）。</div>
-
-      <label style="margin-top:12px">
-        <input type="checkbox" v-model="form.auto_update_enabled" style="width:auto; margin-right:6px" />
-        定时自动更新订阅
-      </label>
-      <label>更新间隔（小时）</label>
-      <input v-model="form.auto_update_hours" type="number" min="1" max="168" style="width:120px" />
-
-      <label style="margin-top:12px">
-        <input type="checkbox" v-model="form.auto_switch" style="width:auto; margin-right:6px" />
-        自动切换订阅
-      </label>
-      <div class="muted">
-        开启后，当<b>当前激活订阅的全部节点都超时</b>（无法代理）时，自动切换到订阅列表中第一个可用的订阅；
-        切换顺序按「订阅管理」页卡片的排列顺序（可用 ↑ ↓ 调整），越靠上越优先。
-        仅在总开关已打开、内核运行中生效；刚切换过的 3 分钟内不会再次切换。开关打开后下方会出现节奏参数卡片。
-      </div>
-
       <div class="row" style="margin-top:14px">
-        <button class="primary" :disabled="busy" @click="save">保存设置</button>
+        <button class="primary" :disabled="busy || !proxyDirty" @click="saveProxy">保存代理设置</button>
         <button :disabled="busy" @click="rebuild">重建配置</button>
         <button @click="preview">{{ showCfg ? '隐藏配置' : '预览生成的配置' }}</button>
       </div>
@@ -169,7 +230,49 @@ onMounted(load)
     <pre v-if="showCfg" class="codebox">{{ cfg }}</pre>
   </div>
 
-  <div class="card" v-if="form.auto_switch">
+  <!-- ===================== 2. 订阅设置 ===================== -->
+  <div class="card" id="subsCard">
+    <h2>订阅设置</h2>
+    <div class="form">
+      <div class="row between sw-row">
+        <div class="sw-text">
+          <div class="v">定时自动更新订阅</div>
+          <div class="muted">按下面的间隔自动重新拉取订阅，保持节点为最新；单个订阅也可以在「订阅管理」页手动更新。</div>
+        </div>
+        <div id="swAutoUpdate" class="switch" :class="{ on: form.auto_update_enabled }" role="switch"
+             :aria-checked="String(!!form.auto_update_enabled)" tabindex="0"
+             @click="form.auto_update_enabled = !form.auto_update_enabled"></div>
+      </div>
+
+      <template v-if="form.auto_update_enabled">
+        <label style="margin-top:12px">更新间隔（小时）</label>
+        <input id="autoUpdateHours" v-model="form.auto_update_hours" type="number" min="1" max="168" style="width:120px" />
+        <div class="muted">范围 1–168 小时，默认 <b>6</b>。</div>
+      </template>
+
+      <div class="row between sw-row" style="margin-top:16px">
+        <div class="sw-text">
+          <div class="v">自动切换订阅</div>
+          <div class="muted">
+            开启后，当<b>当前激活订阅的全部节点都超时</b>（无法代理）时，自动切换到订阅列表中第一个可用的订阅；
+            切换顺序按「订阅管理」页卡片的排列顺序（可用 ↑ ↓ 调整），越靠上越优先。
+            仅在总开关已打开、内核运行中生效；刚切换过的一段时间内不会再次切换。开启后下方会出现节奏参数卡片。
+          </div>
+        </div>
+        <div id="swAutoSwitch" class="switch" :class="{ on: form.auto_switch }" role="switch"
+             :aria-checked="String(!!form.auto_switch)" tabindex="0"
+             @click="form.auto_switch = !form.auto_switch"></div>
+      </div>
+
+      <div class="row" style="margin-top:14px">
+        <button class="primary" :disabled="busy || !subsDirty" @click="saveSubs">保存订阅设置</button>
+        <span class="muted" v-if="busy">保存中…（端口变化时内核会短暂重启）</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 自动切换参数（仅「自动切换订阅」开启时显示）============ -->
+  <div class="card" v-if="form.auto_switch" id="swParamsCard">
     <h2>自动切换参数</h2>
     <div class="muted">
       上面「自动切换订阅」的节奏参数，按需调整，单位都是<b>秒</b>。默认值即推荐值，一般不用改。
@@ -198,22 +301,9 @@ onMounted(load)
     </div>
   </div>
 
-  <div class="card">
-    <h2>版本信息</h2>
-    <table>
-      <tbody>
-        <tr><th style="width:180px">应用版本</th><td class="mono">{{ info.app || '—' }}</td></tr>
-        <tr><th>内核版本</th><td class="mono">{{ info.mihomo || '未运行' }}</td></tr>
-        <tr>
-          <th>规则版本</th>
-          <td class="mono">{{ info.rules || '—' }}<span class="muted"> {{ rulesOrigin }}</span></td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-
-  <div class="card">
-    <h2>分流规则</h2>
+  <!-- ===================== 3. 分流规则设置 ===================== -->
+  <div class="card" id="rulesCard">
+    <h2>分流规则设置</h2>
     <div class="muted">
       <p>规则集随应用内置，作用于分流判定：内网/局域网 → 被墙域名走节点 → 国内域名与 IP 直连 → 订阅自带规则。</p>
       <p>规则来自上游公开仓库（{{ rules.source || 'Loyalsoldier/clash-rules' }}）。若规则过期，可在此<b>直接更新，无需升级应用</b>。</p>
@@ -235,13 +325,91 @@ onMounted(load)
     </div>
   </div>
 
-  <div class="card">
-    <h2>数据与说明</h2>
+  <!-- ===================== 4. 版本信息 ===================== -->
+  <div class="card" id="verCard">
+    <h2>版本信息</h2>
+    <table>
+      <tbody>
+        <tr><th style="width:180px">应用版本</th><td class="mono" id="appVerCell">{{ appVer || '读取中…' }}</td></tr>
+        <tr><th>内核版本</th><td class="mono">{{ info.mihomo || '未运行' }}</td></tr>
+        <tr>
+          <th>规则版本</th>
+          <td class="mono">{{ info.rules || '—' }}<span class="muted"> {{ rulesOrigin }}</span></td>
+        </tr>
+        <tr>
+          <th>开发者</th>
+          <td>
+            <a class="link" href="https://github.com/Tianxiaodudou/Mihomo-fpk" target="_blank" rel="noopener">Tianxiaodudou ↗</a>
+            <span class="muted">（点击打开项目主页）</span>
+          </td>
+        </tr>
+        <tr>
+          <th>发布者</th>
+          <td>
+            <a class="link" id="publisherLink" href="#" role="button" title="微信号：telegram96（点击查看并复制）" @click.prevent="toggleWechat">A鱼儿</a>
+            <span v-if="wechatShow" class="wx-box">
+              微信号：<b class="mono">{{ WECHAT_ID }}</b>
+              <button class="sm primary" id="copyWechatBtn" style="margin-left:8px" @click="copyWechat">一键复制</button>
+            </span>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ===================== 5. 数据说明 ===================== -->
+  <div class="card" id="dataCard">
+    <h2>数据说明</h2>
     <div class="muted">
       <p>· 订阅缓存与运行数据保存在应用的私有目录（/var/apps/MihomoProxy/var），升级或重装不会丢失。</p>
       <p>· 内核仅监听本机的 Unix Socket 控制接口，不对外开放；代理端口默认监听 0.0.0.0，请仅在可信局域网内使用。</p>
       <p>· 本应用不修改系统代理设置，「显式代理」指需要在客户端手动填写 NAS 的 IP 与端口。</p>
       <p>· 关闭总开关会立即停止内核，但保留订阅与配置；重新开启时会自动重建配置。</p>
+    </div>
+  </div>
+
+  <!-- ===================== 6. 支持一下（自由自愿打赏）===================== -->
+  <div class="card" id="donateCard">
+    <!-- 置顶强化：开源号召（比捐赠区更醒目） -->
+    <div class="donate-open">
+      <div class="donate-open-title">🌐 完全开源 · 欢迎一起来完善</div>
+      <div style="line-height:1.8;font-size:14px">
+        源码托管在 GitHub：<a class="ghbtn" href="https://github.com/Tianxiaodudou/Mihomo-fpk" target="_blank" rel="noopener">github.com/Tianxiaodudou/Mihomo-fpk ↗</a><br>
+        <b>任何人都可以去我的仓库完善、改进、提 issue / PR</b>，
+        一起把这个应用做得更好 🙏 有问题也欢迎反馈，我会持续更新。
+      </div>
+    </div>
+    <!-- 捐赠区 -->
+    <div class="donate-center">
+      <h2 class="donate-h2">☕ 用爱发电 · 支持一下（完全自愿）</h2>
+      <p class="muted donate-p">
+        本应用<b>完全免费、无广告、无内购、无任何隐藏收费</b>，代码开源（GPL-3.0）。
+      </p>
+      <!-- 强调块：作者自述（醒目，防被一眼跳过） -->
+      <div class="donate-note">
+        <div style="font-size:15.5px;line-height:1.8">
+          💬 说实话，本大叔<b>完全不会写应用、编译应用</b>什么的，
+          全靠<b>💰 花钱烧 token 请 AI 帮忙</b>才做出这个应用 😂
+        </div>
+        <small>（做订阅解析、做分流规则、做这个界面，也是业余时间一点一点磨出来的）</small>
+      </div>
+      <p class="muted donate-p">
+        如果你觉得它好用、帮到了你，<b>愿意的话</b>可以扫码打赏一杯奶茶钱——<br>
+        纯属<b>自愿捐赠</b>，金额随意、可随时停止，<b>与任何功能/权限无关</b>：
+        打赏不会解锁、不会加速、也不会影响后续使用，你的心意只是让作者更有动力继续维护它
+        （毕竟为爱发电已经把饭费烧光啦 🍚😆）。
+      </p>
+      <div class="donate-qrs">
+        <div class="donate-qr">
+          <img id="donateImgWx" :src="DONATE_WX" alt="微信收款码">
+          <div style="margin-top:6px"><b>微信 · 随意</b></div>
+        </div>
+        <div class="donate-qr">
+          <img id="donateImgAli" :src="DONATE_ALI" alt="支付宝收款码">
+          <div style="margin-top:6px"><b>支付宝 · 随意</b></div>
+        </div>
+      </div>
+      <p class="muted" style="margin:4px auto 0">谢谢你的每一份支持 🙏</p>
     </div>
   </div>
 </template>
