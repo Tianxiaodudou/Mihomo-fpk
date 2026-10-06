@@ -34,7 +34,7 @@ Python `tarfile` 的默认行为与之有三处差异，需逐一修补（见 `_
 `app.tgz` 内的路径**不带 `app/` 前缀**：
 
 ```
-bin/{x86_64,aarch64}/{MihomoProxy-web,mihomo}
+bin/<架构>/{MihomoProxy-web,mihomo}   # 单架构包只含本架构目录（manifest.platform 也只声明本架构）
 etc/config.yaml.template
 ui/config, ui/images/icon_{64,256}.png
 config/          # 注意：config/ 也会被打进 app.tgz

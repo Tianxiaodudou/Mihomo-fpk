@@ -16,6 +16,7 @@
 import argparse
 import gzip
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -35,6 +36,8 @@ MIHOMO_URL = "https://github.com/MetaCubeX/mihomo/releases/download/{v}/mihomo-l
 NPM_REGISTRY = os.environ.get("NPM_REGISTRY", "https://registry.npmmirror.com")
 GOPROXY = os.environ.get("GOPROXY", "https://goproxy.cn,direct")
 ARCHS = (("amd64", "x86_64"), ("arm64", "aarch64"))
+# 每个架构的包在 manifest 里只声明自己（x86 / arm 是 fnOS 的架构标识）
+ARCH_PLATFORM = {"x86_64": "x86", "aarch64": "arm"}
 
 sys.path.insert(0, TOOLS)
 
@@ -189,38 +192,54 @@ def _copy_file(src, dst, mode=0o644, text=True):
 
 
 def stage():
-    log("组装包目录 -> " + PKG)
-    if os.path.isdir(PKG):
-        shutil.rmtree(PKG)
-    os.makedirs(PKG)
+    """按架构分别组装包目录：build/pkg/<arch>/。
 
-    _copy_file(os.path.join(ROOT, "manifest"), os.path.join(PKG, "manifest"))
+    历史：曾把两种架构打进同一个包（内核+后端各 60MB/10MB，单包 50MB+）；
+    现在拆成两个单架构包，体积各自减半，manifest 的 platform 也按架构改写。
+    """
+    for _arch, dirname in ARCHS:
+        _stage_arch(dirname, ARCH_PLATFORM[dirname])
+
+
+def _stage_arch(dirname, platform):
+    pkg = os.path.join(PKG, dirname)
+    log("组装包目录 -> " + pkg)
+    if os.path.isdir(pkg):
+        shutil.rmtree(pkg)
+    os.makedirs(pkg)
+
+    with open(os.path.join(ROOT, "manifest"), encoding="utf-8") as f:
+        mf = f.read()
+    mf = re.sub(r"(?m)^platform\s*=.*$", "platform              = " + platform, mf)
+    with open(os.path.join(pkg, "manifest"), "wb") as f:
+        f.write(mf.encode("utf-8"))
+
     for extra in ("ICON.PNG", "ICON_256.PNG"):
         p = os.path.join(ROOT, extra)
         if os.path.isfile(p):
-            _copy_file(p, os.path.join(PKG, extra), text=False)
+            _copy_file(p, os.path.join(pkg, extra), text=False)
     for name in ("privilege", "resource"):
-        _copy_file(os.path.join(ROOT, "config", name), os.path.join(PKG, "config", name))
+        _copy_file(os.path.join(ROOT, "config", name), os.path.join(pkg, "config", name))
     # app/ 的内容由 fnOS 安装到 $TRIM_APPDEST，模板须放 app/etc/ 下
     _copy_file(os.path.join(ROOT, "etc", "config.yaml.template"),
-               os.path.join(PKG, "app", "etc", "config.yaml.template"))
+               os.path.join(pkg, "app", "etc", "config.yaml.template"))
     cmd_src = os.path.join(ROOT, "cmd")
     for name in sorted(os.listdir(cmd_src)):
         src = os.path.join(cmd_src, name)
         if os.path.isfile(src):
-            _copy_file(src, os.path.join(PKG, "cmd", name), 0o755)
-    _copy_file(os.path.join(ROOT, "app", "ui", "config"), os.path.join(PKG, "app", "ui", "config"))
+            _copy_file(src, os.path.join(pkg, "cmd", name), 0o755)
+    _copy_file(os.path.join(ROOT, "app", "ui", "config"), os.path.join(pkg, "app", "ui", "config"))
     for name in ("icon_64.png", "icon_256.png"):
         p = os.path.join(ROOT, "app", "ui", "images", name)
         if os.path.isfile(p):
-            _copy_file(p, os.path.join(PKG, "app", "ui", "images", name), text=False)
-    for dirname in ("x86_64", "aarch64"):
-        for name in ("MihomoProxy-web", "mihomo"):
-            src = os.path.join(ROOT, "app", "bin", dirname, name)
-            if not os.path.isfile(src):
-                raise SystemExit("缺少二进制: " + src)
-            _copy_file(src, os.path.join(PKG, "app", "bin", dirname, name), 0o755, text=False)
-    log("组装完成: " + PKG)
+            _copy_file(p, os.path.join(pkg, "app", "ui", "images", name), text=False)
+    # 只放本架构的二进制
+    for name in ("MihomoProxy-web", "mihomo"):
+        src = os.path.join(ROOT, "app", "bin", dirname, name)
+        if not os.path.isfile(src):
+            raise SystemExit("缺少二进制: " + src)
+        _copy_file(src, os.path.join(pkg, "app", "bin", dirname, name), 0o755, text=False)
+    log("组装完成: " + pkg)
 
 
 # --------------------------------------------------------------------------
@@ -229,11 +248,16 @@ def stage():
 def pack():
     import pack_fpk
     ver = manifest_version()
-    out = os.path.join(BUILD, "MihomoProxy_%s.fpk" % ver)
     log("打包 .fpk ...")
-    pack_fpk.pack(PKG, out)
-    log("FPK: %s (%.1f MB)" % (out, os.path.getsize(out) / 1048576.0))
-    return out
+    outs = []
+    for _arch, dirname in ARCHS:
+        pkg = os.path.join(PKG, dirname)
+        # 命名格式：版本-架构-软件名（用户要求）
+        out = os.path.join(BUILD, "%s-%s-MihomoProxy.fpk" % (ver, dirname))
+        pack_fpk.pack(pkg, out)
+        log("FPK: %s (%.1f MB)" % (os.path.basename(out), os.path.getsize(out) / 1048576.0))
+        outs.append(out)
+    return outs
 
 
 STEPS = [("web", build_web), ("rules", build_rules), ("go", build_go),

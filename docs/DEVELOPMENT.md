@@ -86,7 +86,7 @@ cd src && go test ./... -count=1
 `.github/workflows/build.yml` 在每次流程运行时：
 
 1. `tools/bump_version.py` 把 `manifest` 的版本号 patch +1（如 `1.0.25` → `1.0.26`）；
-2. 构建前端与双架构后端、下载内核、组装 stage、打包 `.fpk`；
+2. 构建前端与双架构后端、下载内核、按架构分别组装 stage、为每个架构各打一个 `.fpk`（`<版本>-<架构>-MihomoProxy.fpk`）；
 3. 把版本号提交回 `main`（提交信息带 `[skip ci]`，避免再次触发构建）；
 4. 用该版本号创建 tag `vX.Y.Z` 并发布 Release，附带 `.fpk` 与 `SHA256SUMS.txt`。
 

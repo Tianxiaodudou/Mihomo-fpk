@@ -1,7 +1,7 @@
 appname               = MihomoProxy
 version               = 1.0.29
 display_name          = 显式代理
-desc                  = 基于 Mihomo 内核的显式代理服务：SOCKS5/HTTP 混合端口对外提供代理，管理面板走飞牛统一网关，不启用透明代理与虚拟网卡。全部依赖离线打包，单包同时支持 x86_64 与 aarch64。
+desc                  = 基于 Mihomo 内核的显式代理服务：SOCKS5/HTTP 混合端口对外提供代理，管理面板走飞牛统一网关，不启用透明代理与虚拟网卡。全部依赖离线打包，x86_64 与 aarch64 各自独立安装包（按 NAS 架构选装）。
 platform              = x86;arm
 source                = thirdparty
 maintainer            = thirdparty

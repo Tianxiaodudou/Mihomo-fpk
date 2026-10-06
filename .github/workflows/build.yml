@@ -51,9 +51,8 @@ jobs:
 
       - name: 校验与摘要
         run: |
-          fpk=$(ls build/MihomoProxy_*.fpk | head -1)
-          echo "产物: $fpk  ($(du -h "$fpk" | cut -f1))"
-          sha256sum "$fpk" > build/SHA256SUMS.txt
+          ls -lh build/*.fpk
+          sha256sum build/*.fpk > build/SHA256SUMS.txt
           cat build/SHA256SUMS.txt
 
       # 测试必须放在构建之后：go:embed all:static 依赖 npm 产出的 src/static，
@@ -91,5 +90,5 @@ jobs:
           name: 显式代理 v${{ steps.ver.outputs.version }}
           body_path: build/release_notes.md
           files: |
-            build/MihomoProxy_*.fpk
+            build/*.fpk
             build/SHA256SUMS.txt
