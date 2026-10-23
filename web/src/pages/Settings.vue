@@ -32,7 +32,6 @@ const kFetchedAt = ref(0)
 const kShowPre = ref(false)
 const kInfo = ref({})
 const kStatus = ref({ busy: false })
-const kExpanded = ref({})
 const kManual = ref('')
 const kFileBusy = ref(false)
 let kTimer = null
@@ -45,7 +44,7 @@ const kShowList = computed(() => {
   const arch = kGoarch.value
   return (kReleases.value || []).filter((r) => {
     if (!kShowPre.value && r.prerelease) return false
-    // 只显示当前架构的内核包：官方 asset 名为 mihomo-linux-<goarch>-<tag>.gz
+    // 只显示当前架构的内核包：官方 asset 名以 mihomo-linux-<goarch>- 开头
     if (arch && r.asset && !r.asset.includes('-linux-' + arch + '-')) return false
     return true
   })
@@ -68,9 +67,10 @@ function fmtKTime(v) {
   const d = new Date(v)
   return isNaN(d.getTime()) ? v : d.toLocaleString()
 }
-function fmtKSize(n) {
-  if (!n) return ''
-  return (Number(n) / 1048576).toFixed(1) + ' MB'
+function fmtKDate(v) {
+  if (!v) return '—'
+  const d = new Date(v)
+  return isNaN(d.getTime()) ? v : d.toLocaleDateString()
 }
 function syncInfoFromKernel(s) {
   if (!s) return
@@ -134,9 +134,6 @@ function closeKernel() {
   kModal.value = false
   stopKernelPoll()
 }
-function toggleKNotes(tag) {
-  kExpanded.value = { ...kExpanded.value, [tag]: !kExpanded.value[tag] }
-}
 async function refreshAfterSwitch() {
   try {
     info.value = await api.get('/api/version')
@@ -147,9 +144,9 @@ async function refreshAfterSwitch() {
 }
 async function doSwitch(rel) {
   if (kStatus.value && kStatus.value.busy) { notify('已有切换任务在进行中', true); return }
-  kStatus.value = { busy: true, stage: 'queued', version: rel.tag, message: '正在准备…' }
+  kStatus.value = { busy: true, stage: 'queued', version: rel.label || rel.tag, message: '正在准备…' }
   try {
-    await api.post('/api/mihomo/switch', { version: rel.tag })
+    await api.post('/api/mihomo/switch', { version: rel.tag, asset: rel.asset || '' })
     startKernelPoll()
   } catch (e) {
     kStatus.value = { busy: false, stage: 'error', error: e.message }
@@ -172,7 +169,7 @@ function sourceLabel(s) {
 // 本地文件的版本号可能和某个官方 tag 相同，但并不是「从官方仓库安装的」，
 // 因此只有来源为 online 时才把列表项标成当前使用，避免挡住切回同版本官方内核。
 function isActiveRelease(rel) {
-  return kSource.value === 'online' && rel.tag === kActive.value
+  return kSource.value === 'online' && rel.label === kActive.value
 }
 async function pickLocalKernel() {
   if (kStatus.value && kStatus.value.busy) { notify('已有切换任务在进行中', true); return }
@@ -541,7 +538,7 @@ onMounted(load)
       </tbody>
     </table>
     <div class="muted" style="margin-top:10px">
-      点「<span class="kw kw-act">切换版本</span>」可在线下载并启用 <span class="kw kw-key">Mihomo 官方仓库</span>发布的其他内核版本（附官方更新日志），
+      点「<span class="kw kw-act">切换版本</span>」可在线下载并启用 <span class="kw kw-key">Mihomo 官方仓库</span>发布的其他内核编译变体（v1/v2/v3、go120/go123 等），
       <span class="kw kw-warn">切换时内核会短暂重启</span>，订阅与配置不受影响；也可以随时<span class="kw kw-act">恢复内置版本</span>。
     </div>
   </div>
@@ -627,10 +624,11 @@ onMounted(load)
         <div class="k-body">
           <div class="k-topline">
             <div class="muted">
-              以下版本全部来自 Mihomo 官方仓库
-              <a class="link" href="https://github.com/MetaCubeX/mihomo/releases" target="_blank" rel="noopener">MetaCubeX/mihomo ↗</a>，
-              更新日志也来自官方 Release。<b class="kw kw-ok">只显示当前架构</b>
-              <span class="kw kw-val">linux/{{ kGoarch || '—' }}</span> 可用的内核，其他架构的包不会出现。
+              以下编译变体全部来自 Mihomo 官方仓库
+              <a class="link" href="https://github.com/MetaCubeX/mihomo/releases" target="_blank" rel="noopener">MetaCubeX/mihomo ↗</a>：
+              每条显示完整编译版本（如 <span class="kw kw-val">v2-go123-v1.19.33</span>）与发布日期，不再显示更新日志；
+              未标 <span class="kw kw-val">goXXX</span> 后缀的是官方默认 Go 构建。
+              <b class="kw kw-ok">只显示当前架构</b> <span class="kw kw-val">linux/{{ kGoarch || '—' }}</span> 的 <span class="kw kw-val">.gz</span> 内核包。
               切换后内核会<span class="kw kw-warn">短暂重启</span>，订阅与配置不受影响。
             </div>
             <div class="k-actions">
@@ -663,31 +661,19 @@ onMounted(load)
           <div class="k-list">
             <div v-if="kLoading && !kReleases.length" class="empty">正在获取 Mihomo 官方版本列表…</div>
             <div v-else-if="!kShowList.length && !kError" class="empty">没有适用于 linux/{{ kGoarch || '当前架构' }} 的可用版本</div>
-            <div v-for="rel in kShowList" :key="rel.tag" class="k-rel" :class="{ active: isActiveRelease(rel) }">
-              <div class="k-rel-top">
-                <div class="k-rel-name">
-                  <b class="mono">{{ rel.tag }}</b>
-                  <span class="badge on" v-if="isActiveRelease(rel)">当前使用</span>
-                  <span class="badge warn" v-if="rel.prerelease">预发布</span>
-                  <span class="badge fast" v-if="rel.downloaded && !isActiveRelease(rel)">已下载</span>
-                </div>
-                <div class="k-rel-act">
-                  <span class="muted" v-if="rel.size">{{ fmtKSize(rel.size) }}</span>
-                  <button class="primary sm" :disabled="kStatus.busy || isActiveRelease(rel)" @click="doSwitch(rel)">
-                    {{ isActiveRelease(rel) ? '使用中' : (rel.downloaded ? '使用此版本' : '下载并使用') }}
-                  </button>
-                </div>
+            <div v-for="rel in kShowList" :key="rel.asset" class="k-rel" :class="{ active: isActiveRelease(rel) }">
+              <div class="k-rel-name">
+                <b class="mono">{{ rel.label || rel.tag }}</b>
+                <span class="badge on" v-if="isActiveRelease(rel)">当前使用</span>
+                <span class="badge warn" v-if="rel.prerelease">预发布</span>
+                <span class="badge fast" v-if="rel.downloaded && !isActiveRelease(rel)">已下载</span>
               </div>
-              <div class="k-rel-meta muted">
-                {{ rel.name }}<span v-if="rel.published_at"> · 发布于 {{ fmtKTime(rel.published_at) }}</span>
+              <div class="k-rel-act">
+                <span class="muted mono k-date">{{ fmtKDate(rel.published_at) }}</span>
+                <button class="primary sm" :disabled="kStatus.busy || isActiveRelease(rel)" @click="doSwitch(rel)">
+                  {{ isActiveRelease(rel) ? '使用中' : (rel.downloaded ? '使用此版本' : '下载并使用') }}
+                </button>
               </div>
-              <div class="k-notes" :class="{ open: kExpanded[rel.tag] }">
-                <pre v-if="rel.notes">{{ rel.notes }}</pre>
-                <div v-else class="muted">该版本没有填写更新日志。</div>
-              </div>
-              <button class="k-toggle" v-if="rel.notes" @click="toggleKNotes(rel.tag)">
-                {{ kExpanded[rel.tag] ? '收起更新日志' : '展开更新日志' }}
-              </button>
             </div>
           </div>
         </div>
@@ -744,18 +730,12 @@ onMounted(load)
 .k-input { padding: 6px 10px; border: 1px solid var(--border2); border-radius: 8px; background: var(--panel); color: var(--fg); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; width: 180px; }
 .k-input:focus { outline: none; border-color: var(--primary); box-shadow: var(--ring); }
 .k-list { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; padding-bottom: 6px; }
-.k-rel { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; background: var(--panel); transition: border-color var(--trans), background-color var(--trans); }
+.k-rel { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; border: 1px solid var(--border); border-radius: 12px; padding: 9px 14px; background: var(--panel); transition: border-color var(--trans), background-color var(--trans); }
 .k-rel:hover { border-color: var(--border2); background: var(--panel-soft); }
 .k-rel.active { border-color: var(--active-border); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--active-border); }
-.k-rel-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.k-rel-name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; }
-.k-rel-act { display: flex; align-items: center; gap: 10px; margin-left: auto; }
-.k-rel-meta { font-size: 12.5px; margin-top: 4px; }
-.k-notes { margin-top: 8px; position: relative; border-radius: 8px; background: var(--soft2); padding: 8px 10px; max-height: 92px; overflow: hidden; }
-.k-notes.open { max-height: 420px; overflow: auto; }
-.k-notes pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.65; color: var(--fg2); }
-.k-toggle { margin-top: 5px; padding: 3px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; color: var(--primary); }
-.k-toggle:hover { background: var(--hover); border-color: var(--border2); }
+.k-rel-name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; min-width: 0; }
+.k-rel-act { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.k-date { font-size: 12.5px; white-space: nowrap; }
 .k-foot {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   padding: 10px 18px 14px; border-top: 1px solid var(--border); background: var(--panel-soft); font-size: 12.5px;

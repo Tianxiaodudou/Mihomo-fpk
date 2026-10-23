@@ -55,20 +55,22 @@
 
 | 接口 | 说明 |
 | --- | --- |
-| `GET /api/mihomo/releases` | 官方发行版列表（tag / 发布时间 / 更新日志 / 大小 / 是否已下载），只含当前架构，缓存 10 分钟；`?refresh=1` 强制刷新 |
+| `GET /api/mihomo/releases` | 官方发行版的**编译变体**列表（tag / 展示名如 v2-go123-v1.19.33 / 发布日期 / 是否已下载），只含当前架构，缓存 10 分钟；`?refresh=1` 强制刷新 |
 | `GET /api/mihomo/kernel` | 当前生效版本与来源（`online` / `local` / `builtin`）、已下载版本、切换任务状态 |
-| `POST /api/mihomo/switch` | `{"version":"v1.19.33"}` 下载并切换；`{"builtin":true}` 恢复内置版本；`{"path":"/vol1/.../mihomo"}` 导入本地文件。任务异步执行，前端轮询 `/api/mihomo/kernel` |
+| `POST /api/mihomo/switch` | `{"version":"v1.19.33","asset":"mihomo-linux-amd64-v2-go123-v1.19.33.gz"}` 下载指定编译变体；只给 version 时用默认包；`{"builtin":true}` 恢复内置；`{"path":"/vol1/.../mihomo"}` 导入本地文件。任务异步执行，前端轮询 `/api/mihomo/kernel` |
 
 实现要点：
 
-- 只接受官方仓库 `MetaCubeX/mihomo` 的 `vX.Y.Z` tag，下载 asset 名由程序拼装
-  （`mihomo-linux-<goarch>-<tag>.gz`），不信任 API 返回的下载地址；镜像只做转发。
-- 版本列表按 `runtime.GOARCH` 过滤：只保留带有 `mihomo-linux-<goarch>-<tag>.gz` 的发行版；
-  磁盘缓存也记录架构，跨架构或旧缓存会被忽略并重新拉取；接口返回前再过滤一次。
+- 只接受官方仓库 `MetaCubeX/mihomo` 的 `vX.Y.Z` tag；下载地址由 tag + 选中 asset 拼装，
+  不信任 API 返回的下载地址；镜像只做转发。
+- 每个 Release 展开为多个编译变体：只保留 `mihomo-linux-<goarch>-*.gz` 且以 `-<tag>.gz` 结尾的 asset，
+  amd64 会列出 `v1.19.33`、`compatible-v1.19.33`、`v1/v2/v3-(go120/go123)-v1.19.33` 等全部官方变体；
+  不再请求/返回更新日志。磁盘缓存记录架构与列表格式，跨架构或旧缓存会被忽略并重新拉取；接口返回前再过滤一次。
 - 列表接口走 GitHub API：内核运行中时优先走本机代理，再直连 + 加速镜像；全部失败则回落到
   `<var>/kernels/releases.json` 缓存，并提示列表可能不是最新。列表拿不到时弹窗允许手动填版本号。
-- 内核下载到 `<var>/kernels/<tag>/mihomo`（升级应用不丢），选中状态在
-  `<var>/kernels/state.json`；状态为空或文件缺失时自动回落到包内 `app/bin/<arch>/mihomo`。
+- 内核下载到 `<var>/kernels/<key>/mihomo`（升级应用不丢），`key` 为 tag 或 `tag-变体`
+  （如 `v1.19.33-v2-go123`），不同编译变体互不覆盖；选中状态在 `<var>/kernels/state.json`；
+  状态为空或文件缺失时自动回落到包内 `app/bin/<arch>/mihomo`。
 - 下载后校验官方 SHA256（GitHub API 的 `digest` 字段，拿不到时跳过）、ELF 魔数、解压大小上限，
   并实际执行 `mihomo -v` 确认版本号与 tag 一致；写盘后再切换，切换时先停旧内核，启动失败自动回滚。
 - 下载允许慢速连接（最长 25 分钟/次），但连续 60 秒收不到数据会取消并自动换下一条线路；

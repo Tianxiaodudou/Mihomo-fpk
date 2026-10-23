@@ -4,12 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 )
 
 func TestKernelTagRE(t *testing.T) {
-	valid := []string{"v1.19.33", "v1.19.32", "v1.0.0", "v1.19.33-alpha.1", "v0.0.0-local1729680000123456789"}
+	valid := []string{"v1.19.33", "v1.19.32", "v1.0.0", "v1.19.33-alpha.1", "v0.0.0-local1729680000123456789", "v1.19.33-v2-go123"}
 	for _, s := range valid {
 		if !kernelTagRE.MatchString(s) {
 			t.Fatalf("应接受版本号 %q", s)
@@ -25,20 +24,24 @@ func TestKernelTagRE(t *testing.T) {
 
 func TestFilterKernelReleases(t *testing.T) {
 	tag := "v1.19.33"
-	asset := linuxAssetName(tag)
-	if asset != "mihomo-linux-"+runtime.GOARCH+"-"+tag+".gz" {
-		t.Fatalf("asset 名不符合官方规则：%s", asset)
+	generic := linuxAssetName(tag)
+	variant := "mihomo-linux-" + runtime.GOARCH + "-v2-go123-" + tag + ".gz"
+	if generic != "mihomo-linux-"+runtime.GOARCH+"-"+tag+".gz" {
+		t.Fatalf("默认 asset 名不符合官方规则：%s", generic)
 	}
 	digest := "132f6f3edf9a65e62f04853aed3358472e0b2b7666daa8419edfa2ddf5bb6323"
 	raw := []ghRelease{
 		{
-			TagName: tag, Name: "Mihomo " + tag, PublishedAt: "2026-10-21T16:56:13Z",
-			Body:   strings.Repeat("更新日志", kernelNotesMax),
-			Assets: []ghAsset{{Name: asset, Size: 22862419, Digest: "sha256:" + digest}},
+			TagName: tag, PublishedAt: "2026-10-21T16:56:13Z",
+			Assets: []ghAsset{
+				{Name: variant, Size: 111, Digest: "sha256:" + digest},
+				{Name: generic, Size: 222},
+				{Name: "mihomo-linux-" + runtime.GOARCH + "-" + tag + ".deb"},
+			},
 		},
 		{
-			TagName: "Prerelease-Alpha", Body: "alpha",
-			Assets: []ghAsset{{Name: "mihomo-linux-" + runtime.GOARCH + "-alpha-3f27ef3.gz"}},
+			TagName: "Prerelease-Alpha",
+			Assets:  []ghAsset{{Name: "mihomo-linux-" + runtime.GOARCH + "-alpha-3f27ef3.gz"}},
 		},
 		{
 			TagName: "v1.19.32",
@@ -46,20 +49,29 @@ func TestFilterKernelReleases(t *testing.T) {
 		},
 	}
 	got := filterKernelReleases(raw)
-	if len(got) != 1 {
-		t.Fatalf("应只保留 1 个版本，实际 %d", len(got))
+	if len(got) != 3 {
+		t.Fatalf("应按编译变体展开为 3 条，实际 %d：%+v", len(got), got)
 	}
-	if got[0].Tag != tag || got[0].Asset != asset || got[0].Size != 22862419 || got[0].AssetSHA256 != digest {
-		t.Fatalf("发行版字段不正确：%+v", got[0])
+	if got[0].Asset != generic || got[0].Label != tag {
+		t.Fatalf("默认包应排在最前：%+v", got[0])
+	}
+	if got[1].Asset != variant || got[1].Label != "v2-go123-"+tag {
+		t.Fatalf("变体展示格式不正确：%+v", got[1])
+	}
+	if got[1].AssetSHA256 != digest || got[0].AssetSHA256 != "" {
+		t.Fatalf("digest 对应关系不正确：%+v %+v", got[0], got[1])
+	}
+	if got[2].Label != "compatible-v1.19.32" {
+		t.Fatalf("compatible 变体展示不正确：%+v", got[2])
+	}
+	if key := variantKey(variant, tag); key != tag+"-v2-go123" {
+		t.Fatalf("变体目录标识不正确：%s", key)
+	}
+	if key := variantKey(generic, tag); key != tag {
+		t.Fatalf("默认包目录标识应为 tag：%s", key)
 	}
 	if normalizeSHA("sha256:xyz") != "" || normalizeSHA("") != "" {
 		t.Fatalf("非法 digest 应被忽略")
-	}
-	if !strings.Contains(got[0].Notes, "已截断") {
-		t.Fatalf("过长的更新日志应被截断")
-	}
-	if len(got[0].Notes) > kernelNotesMax+40 {
-		t.Fatalf("更新日志截断后仍过长：%d", len(got[0].Notes))
 	}
 }
 

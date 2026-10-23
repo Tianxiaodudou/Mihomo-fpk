@@ -24,7 +24,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 )
 
 // 在线切换 Mihomo 内核版本。
@@ -40,8 +39,7 @@ import (
 
 const (
 	kernelRepo        = "MetaCubeX/mihomo"
-	kernelAPIPageSize = 40
-	kernelNotesMax    = 20000
+	kernelAPIPageSize = 8 // 每个版本有 v1/v2/v3、go120/go123 等多个编译变体，少取几个版本避免列表过长
 	kernelMaxGzSize   = 220 << 20 // 压缩包上限
 	kernelMaxBinSize  = 300 << 20 // 解压后上限
 	kernelCacheTTL    = 10 * time.Minute
@@ -64,14 +62,18 @@ var kernelDownloadMirrors = []string{
 }
 
 // 只接受官方语义化版本 tag（例如 v1.19.33）；Prerelease-Alpha 之类直接忽略。
-var kernelTagRE = regexp.MustCompile(`^v\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?$`)
+// 允许 tag 后缀带多个连字符，因为编译变体的目录标识形如 v1.19.33-v2-go123。
+var kernelTagRE = regexp.MustCompile(`^v\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.-]+)?$`)
+
+// 官方 asset 名白名单：mihomo-linux-<goarch>-<变体>-<tag>.gz，禁止斜杠/路径穿越字符。
+var kernelAssetRE = regexp.MustCompile(`^mihomo-linux-[a-z0-9]+-[A-Za-z0-9][A-Za-z0-9._-]*\.gz$`)
 
 // 从 "mihomo -v" 输出里提取版本号（输出形如 "Mihomo Meta v1.19.33 linux amd64 ..."）。
 var kernelVersionOutputRE = regexp.MustCompile(`v\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?`)
 
 // KernelState 记录当前选中的内核版本；Version 为空表示跟随随应用内置的内核。
 type KernelState struct {
-	Version   string `json:"version"`            // 内核目录标识（在线版为 tag，本地文件为 v0.0.0-local*）
+	Version   string `json:"version"`            // 内核目录标识（在线版为 tag 或 tag-变体，本地文件为 v0.0.0-local*）
 	Label     string `json:"label,omitempty"`    // 展示用版本号（本地文件从 mihomo -v 识别）
 	Source    string `json:"source,omitempty"`   // online / local / builtin
 	UpdatedAt string `json:"updated_at,omitempty"`
@@ -80,9 +82,10 @@ type KernelState struct {
 // KernelMeta 记录某个已下载内核的来源与校验信息。
 type KernelMeta struct {
 	Version     string `json:"version"`
-	Label       string `json:"label,omitempty"`  // 展示用版本号（本地文件从 mihomo -v 识别）
-	Source      string `json:"source,omitempty"` // online / local
-	Asset       string `json:"asset"`            // 在线版为官方 asset 名；本地文件为原文件名
+	Tag         string `json:"tag,omitempty"`     // 官方版本 tag（如 v1.19.33）
+	Label       string `json:"label,omitempty"`   // 展示用完整版本（如 v2-go123-v1.19.33）
+	Source      string `json:"source,omitempty"`  // online / local
+	Asset       string `json:"asset"`             // 在线版为官方 asset 名；本地文件为原文件名
 	Size        int64  `json:"size"`
 	SHA256      string `json:"sha256"`                 // 解压后可执行文件的 SHA256
 	AssetSHA256 string `json:"asset_sha256,omitempty"` // 官方压缩包的 SHA256（校验镜像完整性）
@@ -91,11 +94,10 @@ type KernelMeta struct {
 
 // KernelRelease 是设置页「切换版本」弹窗里展示的官方发行版。
 type KernelRelease struct {
-	Tag         string `json:"tag"`
-	Name        string `json:"name"`
+	Tag         string `json:"tag"`   // 官方版本 tag（用于下载地址）
+	Label       string `json:"label"` // 展示格式：v2-go123-v1.19.33 / compatible-v1.19.33 / v1.19.33
 	PublishedAt string `json:"published_at"`
 	Prerelease  bool   `json:"prerelease"`
-	Notes       string `json:"notes"`
 	Asset       string `json:"asset"`
 	Size        int64  `json:"size"`
 	// AssetSHA256 是官方 .gz 压缩包的 SHA256（GitHub API 的 digest 字段），用于校验镜像下载内容。
@@ -106,8 +108,10 @@ type KernelRelease struct {
 // InstalledKernel 是本地已下载的内核版本。
 type InstalledKernel struct {
 	Version     string `json:"version"`
+	Tag         string `json:"tag,omitempty"`
 	Label       string `json:"label,omitempty"`
 	Source      string `json:"source,omitempty"`
+	Asset       string `json:"asset,omitempty"`
 	Size        int64  `json:"size"`
 	SHA256      string `json:"sha256"`
 	InstalledAt string `json:"installed_at"`
@@ -136,16 +140,17 @@ type ghAsset struct {
 
 type ghRelease struct {
 	TagName     string    `json:"tag_name"`
-	Name        string    `json:"name"`
-	Body        string    `json:"body"`
 	PublishedAt string    `json:"published_at"`
 	Prerelease  bool      `json:"prerelease"`
 	Draft       bool      `json:"draft"`
 	Assets      []ghAsset `json:"assets"`
 }
 
+const kernelReleaseCacheFormat = 2 // 2 = 按编译变体展开的列表；旧缓存自动失效
+
 type kernelReleaseCache struct {
 	FetchedAt int64           `json:"fetched_at"`
+	Format    int             `json:"format"`
 	Arch      string          `json:"arch"` // 缓存只对生成它的架构有效
 	Releases  []KernelRelease `json:"releases"`
 }
@@ -203,8 +208,8 @@ func (p *Paths) activeKernelBin() (string, string) {
 			if m == nil {
 				return p.BundledMihomoBin(), ""
 			}
-			// 在线版必须是当前架构的包；本地文件不比较官方 asset 名（导入时已校验可执行）。
-			if m.Source == "local" || m.Asset == linuxAssetName(st.Version) {
+			// 在线版必须是当前架构的官方 .gz 包（含 v1/v2/v3、go 变体）；本地文件导入时已校验可执行。
+			if m.Source == "local" || assetFitsArch(m.Asset) {
 				return bin, st.Version
 			}
 		}
@@ -253,10 +258,10 @@ func installedKernels(p *Paths) []InstalledKernel {
 		if m == nil {
 			continue // 没有元信息的目录不展示
 		}
-		if m.Source != "local" && m.Asset != linuxAssetName(e.Name()) {
-			continue // 在线版必须是当前架构的官方包
+		if m.Source != "local" && !assetFitsArch(m.Asset) {
+			continue // 在线版必须是当前架构的官方 .gz 包
 		}
-		it := InstalledKernel{Version: e.Name(), Size: fi.Size(), Active: bin == active}
+		it := InstalledKernel{Version: e.Name(), Tag: m.Tag, Asset: m.Asset, Size: fi.Size(), Active: bin == active}
 		it.Label, it.Source = m.Label, m.Source
 		if it.Label == "" {
 			it.Label = e.Name()
@@ -324,23 +329,66 @@ func cleanupKernels(p *Paths, keep string) {
 
 // ---------- 官方发行版列表 ----------
 
+func linuxAssetPrefix() string {
+	return "mihomo-linux-" + runtime.GOARCH + "-"
+}
+
+// linuxAssetName 返回当前架构的默认（无 CPU 变体后缀）官方 asset 名。
 func linuxAssetName(tag string) string {
-	return fmt.Sprintf("mihomo-linux-%s-%s.gz", runtime.GOARCH, tag)
+	return linuxAssetPrefix() + tag + ".gz"
 }
 
 func officialAssetURL(tag, asset string) string {
 	return fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", kernelRepo, tag, asset)
 }
 
-func trimNotes(s string) string {
-	if len(s) <= kernelNotesMax {
-		return s
+// assetFitsArch 判断 asset 是否为当前架构的 .gz 内核包（amd64 的 v1/v2/v3、go120/go123、compatible 都算）。
+func assetFitsArch(asset string) bool {
+	return kernelAssetRE.MatchString(asset) && strings.HasPrefix(asset, linuxAssetPrefix())
+}
+
+// assetLabel 把官方 asset 名转成展示格式：
+// mihomo-linux-amd64-v2-go123-v1.19.33.gz -> v2-go123-v1.19.33
+func assetLabel(asset, tag string) string {
+	s := strings.TrimPrefix(asset, linuxAssetPrefix())
+	return strings.TrimSuffix(s, ".gz")
+}
+
+// variantSuffix 从 asset 里取出编译变体后缀：v2-go123 / v1 / compatible / ""。
+func variantSuffix(asset, tag string) string {
+	s := assetLabel(asset, tag)
+	s = strings.TrimSuffix(s, "-"+tag)
+	s = strings.TrimSuffix(s, tag)
+	return strings.Trim(s, "-.")
+}
+
+// variantKey 生成内核目录/状态用的唯一标识：v1.19.33-v2-go123。
+func variantKey(asset, tag string) string {
+	if s := variantSuffix(asset, tag); s != "" {
+		return tag + "-" + s
 	}
-	cut := s[:kernelNotesMax]
-	for len(cut) > 0 && !utf8.ValidString(cut) {
-		cut = cut[:len(cut)-1]
+	return tag
+}
+
+var kernelVariantRE = regexp.MustCompile(`^v([123])(?:-go(\d+))?$`)
+
+// variantRank 只用于同一版本内部的排序：默认包 → compatible → v1/v2/v3 → 各 go 变体。
+func variantRank(asset, tag string) int {
+	s := variantSuffix(asset, tag)
+	if s == "" {
+		return 0
 	}
-	return cut + "\n\n…（更新日志过长，已截断）"
+	if s == "compatible" {
+		return 1
+	}
+	if m := kernelVariantRE.FindStringSubmatch(s); m != nil {
+		rank := 10 + int(m[1][0]-'0')*10
+		if m[2] != "" {
+			rank++
+		}
+		return rank
+	}
+	return 100
 }
 
 func newKernelHTTPClient(timeout time.Duration, proxyAddr string) *http.Client {
@@ -381,7 +429,7 @@ func (a *App) listKernelReleases(force bool) ([]KernelRelease, string, int64, er
 	if b, err := os.ReadFile(cachePath); err == nil {
 		var c kernelReleaseCache
 		// 旧缓存没有 arch 字段，或来自另一种 CPU 架构时直接忽略，避免列出本机装不了的内核。
-		if json.Unmarshal(b, &c) == nil && len(c.Releases) > 0 && c.Arch == runtime.GOARCH {
+		if json.Unmarshal(b, &c) == nil && len(c.Releases) > 0 && c.Format == kernelReleaseCacheFormat && c.Arch == runtime.GOARCH {
 			c.Releases = filterReleasesForArch(c.Releases)
 			if len(c.Releases) > 0 {
 				cached = &c
@@ -435,7 +483,7 @@ func (a *App) listKernelReleases(force bool) ([]KernelRelease, string, int64, er
 				errs = append(errs, fmt.Sprintf("%s: 没有找到适用于 linux/%s 的发行版", hostOf(u), runtime.GOARCH))
 				continue
 			}
-			c := kernelReleaseCache{FetchedAt: time.Now().Unix(), Arch: runtime.GOARCH, Releases: list}
+			c := kernelReleaseCache{FetchedAt: time.Now().Unix(), Format: kernelReleaseCacheFormat, Arch: runtime.GOARCH, Releases: list}
 			if b, err := json.MarshalIndent(c, "", "  "); err == nil {
 				_ = atomicWrite(cachePath, append(b, '\n'), 0o644)
 			}
@@ -470,10 +518,9 @@ func normalizeSHA(s string) string {
 	return s
 }
 
-// releaseFitsArch 判断发行版是否提供当前 CPU 架构的内核包。
-// 官方命名规则固定为 mihomo-linux-<goarch>-<tag>.gz，asset 名由后端拼装后比对。
+// releaseFitsArch 判断发行版条目是否为当前 CPU 架构的官方 .gz 内核包。
 func releaseFitsArch(rel KernelRelease) bool {
-	return rel.Asset == linuxAssetName(rel.Tag)
+	return assetFitsArch(rel.Asset)
 }
 
 // filterReleasesForArch 只保留当前架构可下载的版本（缓存 / 接口返回前再兜一层）。
@@ -487,37 +534,37 @@ func filterReleasesForArch(list []KernelRelease) []KernelRelease {
 	return out
 }
 
+// filterKernelReleases 把每个官方 Release 展开成多个编译变体：
+// v1.19.33、compatible-v1.19.33、v1-v1.19.33、v2-go123-v1.19.33 ...
 func filterKernelReleases(raw []ghRelease) []KernelRelease {
 	out := []KernelRelease{}
 	for _, r := range raw {
 		if r.Draft || !kernelTagRE.MatchString(r.TagName) {
 			continue
 		}
-		want := linuxAssetName(r.TagName)
-		var asset *ghAsset
-		for i := range r.Assets {
-			if r.Assets[i].Name == want {
-				asset = &r.Assets[i]
-				break
+		group := []KernelRelease{}
+		for _, asset := range r.Assets {
+			if !assetFitsArch(asset.Name) || !strings.HasSuffix(asset.Name, "-"+r.TagName+".gz") {
+				continue
 			}
+			group = append(group, KernelRelease{
+				Tag:         r.TagName,
+				Label:       assetLabel(asset.Name, r.TagName),
+				PublishedAt: r.PublishedAt,
+				Prerelease:  r.Prerelease,
+				Asset:       asset.Name,
+				Size:        asset.Size,
+				AssetSHA256: normalizeSHA(asset.Digest),
+			})
 		}
-		if asset == nil {
-			continue
-		}
-		name := r.Name
-		if name == "" {
-			name = r.TagName
-		}
-		out = append(out, KernelRelease{
-			Tag:         r.TagName,
-			Name:        name,
-			PublishedAt: r.PublishedAt,
-			Prerelease:  r.Prerelease,
-			Notes:       trimNotes(r.Body),
-			Asset:       asset.Name,
-			Size:        asset.Size,
-			AssetSHA256: normalizeSHA(asset.Digest),
+		sort.SliceStable(group, func(i, j int) bool {
+			ri, rj := variantRank(group[i].Asset, group[i].Tag), variantRank(group[j].Asset, group[j].Tag)
+			if ri != rj {
+				return ri < rj
+			}
+			return group[i].Label < group[j].Label
 		})
+		out = append(out, group...)
 	}
 	return out
 }
@@ -631,8 +678,9 @@ func verifyKernelBinary(path, version string) error {
 }
 
 // downloadKernel 依次尝试官方地址与各镜像，成功返回解压后的临时文件路径。
-func (a *App) downloadKernel(tag, asset string, size int64, wantSHA string) (string, error) {
-	dir := filepath.Join(a.Paths.KernelDir(), tag)
+// key 是内核目录标识（tag 或 tag-变体），tag 用于拼官方下载地址，asset 是选中的编译变体。
+func (a *App) downloadKernel(key, tag, asset string, size int64, wantSHA string) (string, error) {
+	dir := filepath.Join(a.Paths.KernelDir(), key)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
@@ -650,7 +698,7 @@ func (a *App) downloadKernel(tag, asset string, size int64, wantSHA string) (str
 			}
 			u := fmt.Sprintf(tpl, official)
 			a.kernelSet(func(s *KernelStatus) { s.Message = "正在从 " + hostOf(u) + " 下载…" })
-			path, err := a.downloadOnce(cl, u, tag, size, wantSHA)
+			path, err := a.downloadOnce(cl, u, key, size, wantSHA)
 			if err == nil {
 				return path, nil
 			}
@@ -663,7 +711,7 @@ func (a *App) downloadKernel(tag, asset string, size int64, wantSHA string) (str
 	return "", fmt.Errorf("内核下载失败：%s", strings.Join(dedupe(errs, 6), "；"))
 }
 
-func (a *App) downloadOnce(cl *http.Client, u, tag string, size int64, wantSHA string) (string, error) {
+func (a *App) downloadOnce(cl *http.Client, u, key string, size int64, wantSHA string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), kernelDownloadAttempt)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
@@ -699,7 +747,7 @@ func (a *App) downloadOnce(cl *http.Client, u, tag string, size int64, wantSHA s
 	}
 	defer gz.Close()
 
-	f, err := os.CreateTemp(filepath.Dir(filepath.Join(a.Paths.KernelDir(), tag, "mihomo")), ".download-*")
+	f, err := os.CreateTemp(filepath.Dir(filepath.Join(a.Paths.KernelDir(), key, "mihomo")), ".download-*")
 	if err != nil {
 		return "", err
 	}
@@ -741,24 +789,24 @@ func (a *App) downloadOnce(cl *http.Client, u, tag string, size int64, wantSHA s
 	return tmp, nil
 }
 
-// ensureKernelInstalled 保证 <var>/kernels/<tag>/mihomo 存在且可用；已存在则跳过下载。
-// wantSHA 为官方压缩包的 SHA256（拿不到时为空，仅做 ELF/版本校验）。
-func (a *App) ensureKernelInstalled(tag string, size int64, wantSHA string) error {
-	bin := a.Paths.KernelBin(tag)
+// ensureKernelVariantInstalled 保证 <var>/kernels/<key>/mihomo 存在且可用；已存在则跳过下载。
+// key 是目录唯一标识（如 v1.19.33-v2-go123），tag 是官方版本，asset 是具体编译变体。
+func (a *App) ensureKernelVariantInstalled(key, tag, asset, label string, size int64, wantSHA string) error {
+	bin := a.Paths.KernelBin(key)
 	if fi, err := os.Stat(bin); err == nil && fi.Mode().IsRegular() && fi.Size() > 1<<20 {
 		a.kernelSet(func(s *KernelStatus) {
 			s.Stage = "verifying"
 			s.Message = "本地已有该版本，正在校验…"
 		})
-		meta := readKernelMeta(a.Paths, tag)
-		// 有官方摘要时，还要求本地记录与之一致；老版本没记录过摘要则重新下载校验。
-		trusted := wantSHA == "" || (meta != nil && meta.AssetSHA256 == wantSHA)
+		meta := readKernelMeta(a.Paths, key)
+		// 必须同一个编译变体；有官方摘要时还要求摘要一致。
+		trusted := meta != nil && meta.Asset == asset && (wantSHA == "" || meta.AssetSHA256 == wantSHA)
 		if trusted && verifyKernelBinary(bin, tag) == nil {
 			return nil
 		}
 	}
 
-	tmp, err := a.downloadKernel(tag, linuxAssetName(tag), size, wantSHA)
+	tmp, err := a.downloadKernel(key, tag, asset, size, wantSHA)
 	if err != nil {
 		return err
 	}
@@ -775,7 +823,7 @@ func (a *App) ensureKernelInstalled(tag string, size int64, wantSHA string) erro
 	if err != nil {
 		return err
 	}
-	dst := a.Paths.KernelBin(tag)
+	dst := a.Paths.KernelBin(key)
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
@@ -792,10 +840,11 @@ func (a *App) ensureKernelInstalled(tag string, size int64, wantSHA string) erro
 		sz = fi.Size()
 	}
 	return writeKernelMeta(a.Paths, &KernelMeta{
-		Version:     tag,
-		Label:       tag,
+		Version:     key,
+		Tag:         tag,
+		Label:       label,
 		Source:      "online",
-		Asset:       linuxAssetName(tag),
+		Asset:       asset,
 		Size:        sz,
 		SHA256:      sha,
 		AssetSHA256: wantSHA,
@@ -1081,7 +1130,8 @@ func (a *App) kernelDone(version string) {
 }
 
 // StartKernelSwitch 异步下载并切换内核；version 为空表示恢复随应用内置的内核。
-func (a *App) StartKernelSwitch(version string) error {
+// asset 为空时使用当前架构的默认包，指定 asset 可切换 v1/v2/v3、go120/go123 等编译变体。
+func (a *App) StartKernelSwitch(version, asset string) error {
 	a.kMu.Lock()
 	if a.kSt.Busy {
 		a.kMu.Unlock()
@@ -1095,32 +1145,44 @@ func (a *App) StartKernelSwitch(version string) error {
 		StartedAt: nowUnix(),
 	}
 	a.kMu.Unlock()
-	go a.runKernelSwitch(version)
+	go a.runKernelSwitch(version, asset)
 	return nil
 }
 
-func (a *App) runKernelSwitch(version string) {
+func (a *App) runKernelSwitch(version, asset string) {
 	defer func() {
 		if r := recover(); r != nil {
 			a.kernelFail(fmt.Errorf("内核切换异常：%v", r))
 		}
 	}()
 
+	key, label, source := "", "", "builtin"
 	if version != "" {
+		if asset == "" {
+			asset = linuxAssetName(version)
+		}
+		label = assetLabel(asset, version)
+		if label == "" {
+			label = version
+		}
+		key = variantKey(asset, version)
+		source = "online"
+
 		// 拿一次发行版信息以便显示下载大小、并取得官方 SHA256；列表获取失败不阻塞
 		//（下载地址由官方仓库 + tag 自行拼装，手动输入版本号也能用，只是没有摘要校验）。
 		var size int64
 		var wantSHA string
 		if releases, _, _, err := a.listKernelReleases(false); err == nil {
 			for _, r := range releases {
-				if r.Tag == version {
+				if r.Asset == asset {
 					size = r.Size
 					wantSHA = r.AssetSHA256
+					label = r.Label
 					break
 				}
 			}
 		}
-		if err := a.ensureKernelInstalled(version, size, wantSHA); err != nil {
+		if err := a.ensureKernelVariantInstalled(key, version, asset, label, size, wantSHA); err != nil {
 			a.kernelFail(err)
 			return
 		}
@@ -1130,23 +1192,18 @@ func (a *App) runKernelSwitch(version string) {
 		s.Stage = "activating"
 		s.Message = "正在切换并重启内核…"
 	})
-	label, source := version, "online"
-	if version == "" {
-		label, source = "", "builtin"
-	}
-	if err := a.activateKernel(version, label, source); err != nil {
+	if err := a.activateKernel(key, label, source); err != nil {
 		a.kernelFail(err)
 		return
 	}
-	cleanupKernels(a.Paths, version)
-	done := version
-	if done == "" {
-		done = mihomoBundled
-		if done == "" {
-			done = "随应用内置"
+	cleanupKernels(a.Paths, key)
+	if source == "builtin" {
+		label = mihomoBundled
+		if label == "" {
+			label = "随应用内置"
 		}
 	}
-	a.kernelDone(done)
+	a.kernelDone(label)
 }
 
 // ---------- HTTP 接口 ----------
@@ -1176,10 +1233,12 @@ func (a *App) hMihomoReleases(w http.ResponseWriter, r *http.Request) {
 	releases = filterReleasesForArch(releases)
 	have := map[string]bool{}
 	for _, it := range installedKernels(a.Paths) {
-		have[it.Version] = true
+		if it.Asset != "" {
+			have[it.Asset] = true
+		}
 	}
 	for i := range releases {
-		releases[i].Downloaded = have[releases[i].Tag]
+		releases[i].Downloaded = have[releases[i].Asset]
 	}
 	active, source := a.Paths.MihomoVersion()
 	writeJSON(w, 200, map[string]any{
@@ -1197,6 +1256,7 @@ func (a *App) hMihomoReleases(w http.ResponseWriter, r *http.Request) {
 func (a *App) hMihomoSwitch(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Version string `json:"version"`
+		Asset   string `json:"asset"`
 		Path    string `json:"path"`
 		Builtin bool   `json:"builtin"`
 	}
@@ -1206,13 +1266,14 @@ func (a *App) hMihomoSwitch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	version := strings.TrimSpace(body.Version)
+	asset := strings.TrimSpace(body.Asset)
 	if body.Builtin {
-		version = ""
+		version, asset = "", ""
 	}
 	// 飞牛文件选择器挑的本地内核文件（官方 .gz 或已解压二进制）。
 	if p := strings.TrimSpace(body.Path); p != "" {
-		if version != "" || body.Builtin {
-			writeErr(w, 400, "path 不能与 version/builtin 同时使用")
+		if version != "" || asset != "" || body.Builtin {
+			writeErr(w, 400, "path 不能与 version/asset/builtin 同时使用")
 			return
 		}
 		if err := a.StartKernelFileSwitch(p); err != nil {
@@ -1226,11 +1287,21 @@ func (a *App) hMihomoSwitch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "版本号格式不正确（只支持 Mihomo 官方 vX.Y.Z 版本）")
 		return
 	}
+	if asset != "" {
+		if version == "" {
+			writeErr(w, 400, "指定 asset 时必须同时提供 version")
+			return
+		}
+		if !assetFitsArch(asset) || !strings.HasSuffix(asset, "-"+version+".gz") {
+			writeErr(w, 400, "asset 必须是当前架构、且属于该版本的官方 .gz 内核包")
+			return
+		}
+	}
 	if version == "" && !body.Builtin {
 		writeErr(w, 400, "缺少 version（或 builtin=true 恢复内置内核）")
 		return
 	}
-	if err := a.StartKernelSwitch(version); err != nil {
+	if err := a.StartKernelSwitch(version, asset); err != nil {
 		writeErr(w, 409, err.Error())
 		return
 	}
