@@ -49,6 +49,32 @@
 
 对应接口：`GET /api/rules`（当前规则版本与条数）、`POST /api/rules/update`（手动更新）。
 
+## 内核版本在线切换
+
+设置页「版本信息」里内核版本右侧的「切换版本」支持在线下载并启用 Mihomo 官方内核：
+
+| 接口 | 说明 |
+| --- | --- |
+| `GET /api/mihomo/releases` | 官方发行版列表（tag / 发布时间 / 更新日志 / 大小 / 是否已下载），只含当前架构，缓存 10 分钟；`?refresh=1` 强制刷新 |
+| `GET /api/mihomo/kernel` | 当前生效版本与来源（`online` / `builtin`）、已下载版本、切换任务状态 |
+| `POST /api/mihomo/switch` | `{"version":"v1.19.33"}` 下载并切换；`{"builtin":true}` 恢复内置版本。任务异步执行，前端轮询 `/api/mihomo/kernel` |
+
+实现要点：
+
+- 只接受官方仓库 `MetaCubeX/mihomo` 的 `vX.Y.Z` tag，下载 asset 名由程序拼装
+  （`mihomo-linux-<goarch>-<tag>.gz`），不信任 API 返回的下载地址；镜像只做转发。
+- 版本列表按 `runtime.GOARCH` 过滤：只保留带有 `mihomo-linux-<goarch>-<tag>.gz` 的发行版；
+  磁盘缓存也记录架构，跨架构或旧缓存会被忽略并重新拉取；接口返回前再过滤一次。
+- 列表接口走 GitHub API：内核运行中时优先走本机代理，再直连 + 加速镜像；全部失败则回落到
+  `<var>/kernels/releases.json` 缓存，并提示列表可能不是最新。列表拿不到时弹窗允许手动填版本号。
+- 内核下载到 `<var>/kernels/<tag>/mihomo`（升级应用不丢），选中状态在
+  `<var>/kernels/state.json`；状态为空或文件缺失时自动回落到包内 `app/bin/<arch>/mihomo`。
+- 下载后校验官方 SHA256（GitHub API 的 `digest` 字段，拿不到时跳过）、ELF 魔数、解压大小上限，
+  并实际执行 `mihomo -v` 确认版本号与 tag 一致；写盘后再切换，切换时先停旧内核，启动失败自动回滚。
+- 下载允许慢速连接（最长 25 分钟/次），但连续 60 秒收不到数据会取消并自动换下一条线路；
+  多个镜像与「本机代理 / 直连」交错尝试，避免某条线路卡死拖住整个切换。
+- 只保留当前版本 + 最近 2 个历史版本（每个约 50–60MB），避免越堆越多。
+
 ## 本地构建
 
 依赖：Python 3.8+、Go 1.22+、Node.js 18+。

@@ -1,0 +1,984 @@
+package main
+
+import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+	"unicode/utf8"
+)
+
+// 在线切换 Mihomo 内核版本。
+//
+// 设计要点：
+//   - 只接受 Mihomo 官方仓库（MetaCubeX/mihomo）的发行版，asset 名由本程序拼装，
+//     不使用 API 返回的 browser_download_url，避免被镜像/中间人改写下载地址；
+//   - 下载到应用私有目录 <var>/kernels/<tag>/mihomo（升级应用不会丢），
+//     选中状态写入 <var>/kernels/state.json；未选中/文件缺失时自动回落到包内自带内核；
+//   - 替换后先跑 "mihomo -v" 验证可执行且版本匹配，再重启内核；
+//     重启失败自动回滚到原内核；
+//   - 国内直连 GitHub 常失败，因此 API 与下载都走「直连 + 多个镜像 + 本机代理」多路尝试。
+
+const (
+	kernelRepo        = "MetaCubeX/mihomo"
+	kernelAPIPageSize = 40
+	kernelNotesMax    = 20000
+	kernelMaxGzSize   = 220 << 20 // 压缩包上限
+	kernelMaxBinSize  = 300 << 20 // 解压后上限
+	kernelCacheTTL    = 10 * time.Minute
+)
+
+// GitHub 官方 API + 常用加速镜像（镜像只是转发，返回内容仍是官方 JSON）。
+var kernelAPIMirrors = []string{
+	"https://api.github.com/repos/" + kernelRepo + "/releases?per_page=" + strconv.Itoa(kernelAPIPageSize),
+	"https://ghfast.top/https://api.github.com/repos/" + kernelRepo + "/releases?per_page=" + strconv.Itoa(kernelAPIPageSize),
+	"https://ghproxy.net/https://api.github.com/repos/" + kernelRepo + "/releases?per_page=" + strconv.Itoa(kernelAPIPageSize),
+	"https://gh-proxy.com/https://api.github.com/repos/" + kernelRepo + "/releases?per_page=" + strconv.Itoa(kernelAPIPageSize),
+}
+
+// 下载地址模板：%s 为官方 releases/download 地址。
+var kernelDownloadMirrors = []string{
+	"%s",
+	"https://ghfast.top/%s",
+	"https://ghproxy.net/%s",
+	"https://gh-proxy.com/%s",
+}
+
+// 只接受官方语义化版本 tag（例如 v1.19.33）；Prerelease-Alpha 之类直接忽略。
+var kernelTagRE = regexp.MustCompile(`^v\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?$`)
+
+// KernelState 记录当前选中的内核版本；Version 为空表示跟随随应用内置的内核。
+type KernelState struct {
+	Version   string `json:"version"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+// KernelMeta 记录某个已下载内核的来源与校验信息。
+type KernelMeta struct {
+	Version     string `json:"version"`
+	Asset       string `json:"asset"`
+	Size        int64  `json:"size"`
+	SHA256      string `json:"sha256"`       // 解压后可执行文件的 SHA256
+	AssetSHA256 string `json:"asset_sha256,omitempty"` // 官方压缩包的 SHA256（校验镜像完整性）
+	InstalledAt string `json:"installed_at"`
+}
+
+// KernelRelease 是设置页「切换版本」弹窗里展示的官方发行版。
+type KernelRelease struct {
+	Tag         string `json:"tag"`
+	Name        string `json:"name"`
+	PublishedAt string `json:"published_at"`
+	Prerelease  bool   `json:"prerelease"`
+	Notes       string `json:"notes"`
+	Asset       string `json:"asset"`
+	Size        int64  `json:"size"`
+	// AssetSHA256 是官方 .gz 压缩包的 SHA256（GitHub API 的 digest 字段），用于校验镜像下载内容。
+	AssetSHA256 string `json:"asset_sha256,omitempty"`
+	Downloaded  bool   `json:"downloaded"`
+}
+
+// InstalledKernel 是本地已下载的内核版本。
+type InstalledKernel struct {
+	Version     string `json:"version"`
+	Size        int64  `json:"size"`
+	SHA256      string `json:"sha256"`
+	InstalledAt string `json:"installed_at"`
+	Active      bool   `json:"active"`
+}
+
+// KernelStatus 是下载/切换任务的实时状态（前端轮询）。
+type KernelStatus struct {
+	Busy       bool   `json:"busy"`
+	Stage      string `json:"stage"` // idle / downloading / verifying / activating / done / error
+	Version    string `json:"version"`
+	Downloaded int64  `json:"downloaded"`
+	Total      int64  `json:"total"`
+	Message    string `json:"message"`
+	Error      string `json:"error"`
+	StartedAt  int64  `json:"started_at"`
+	FinishedAt int64  `json:"finished_at"`
+}
+
+type ghAsset struct {
+	Name               string `json:"name"`
+	Size               int64  `json:"size"`
+	Digest             string `json:"digest"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
+
+type ghRelease struct {
+	TagName     string    `json:"tag_name"`
+	Name        string    `json:"name"`
+	Body        string    `json:"body"`
+	PublishedAt string    `json:"published_at"`
+	Prerelease  bool      `json:"prerelease"`
+	Draft       bool      `json:"draft"`
+	Assets      []ghAsset `json:"assets"`
+}
+
+type kernelReleaseCache struct {
+	FetchedAt int64           `json:"fetched_at"`
+	Arch      string          `json:"arch"` // 缓存只对生成它的架构有效
+	Releases  []KernelRelease `json:"releases"`
+}
+
+const (
+	kernelAPIAttemptTimeout = 15 * time.Second
+	kernelAPITotalBudget    = 100 * time.Second
+	kernelDownloadBudget    = 45 * time.Minute
+	kernelDownloadAttempt   = 25 * time.Minute
+	kernelIdleTimeout       = 60 * time.Second
+)
+
+var kernelRelMu sync.Mutex
+
+// ---------- 路径 / 状态 ----------
+
+func (p *Paths) KernelDir() string       { return filepath.Join(p.Var, "kernels") }
+func (p *Paths) KernelStateFile() string { return filepath.Join(p.KernelDir(), "state.json") }
+func (p *Paths) KernelBin(version string) string {
+	return filepath.Join(p.KernelDir(), version, "mihomo")
+}
+
+// BundledMihomoBin 返回安装包内自带的内核路径。
+func (p *Paths) BundledMihomoBin() string { return filepath.Join(p.AppDest, "bin", p.Arch, "mihomo") }
+
+func loadKernelState(p *Paths) *KernelState {
+	b, err := os.ReadFile(p.KernelStateFile())
+	if err != nil {
+		return nil
+	}
+	var st KernelState
+	if json.Unmarshal(b, &st) != nil {
+		return nil
+	}
+	if st.Version != "" && !kernelTagRE.MatchString(st.Version) {
+		return nil
+	}
+	return &st
+}
+
+func saveKernelState(p *Paths, st *KernelState) error {
+	b, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWrite(p.KernelStateFile(), append(b, '\n'), 0o600)
+}
+
+// activeKernelBin 返回实际会被启动的内核路径：优先用户在线下载的版本，否则包内自带。
+func (p *Paths) activeKernelBin() (string, string) {
+	if st := loadKernelState(p); st != nil && st.Version != "" {
+		bin := p.KernelBin(st.Version)
+		if fi, err := os.Stat(bin); err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0 {
+			// 只有 meta 记录为当前架构的包才启用，避免把另一种 CPU 架构的内核当成本机版本。
+			if m := readKernelMeta(p, st.Version); m != nil && m.Asset == linuxAssetName(st.Version) {
+				return bin, st.Version
+			}
+		}
+	}
+	return p.BundledMihomoBin(), ""
+}
+
+func readKernelMeta(p *Paths, version string) *KernelMeta {
+	b, err := os.ReadFile(filepath.Join(p.KernelDir(), version, "meta.json"))
+	if err != nil {
+		return nil
+	}
+	var m KernelMeta
+	if json.Unmarshal(b, &m) != nil {
+		return nil
+	}
+	return &m
+}
+
+func writeKernelMeta(p *Paths, m *KernelMeta) error {
+	b, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWrite(filepath.Join(p.KernelDir(), m.Version, "meta.json"), append(b, '\n'), 0o644)
+}
+
+// installedKernels 列出 <var>/kernels 下已经下载完成的版本（最新安装的在前）。
+func installedKernels(p *Paths) []InstalledKernel {
+	active, _ := p.activeKernelBin()
+	ents, err := os.ReadDir(p.KernelDir())
+	if err != nil {
+		return []InstalledKernel{}
+	}
+	out := []InstalledKernel{}
+	for _, e := range ents {
+		if !e.IsDir() || !kernelTagRE.MatchString(e.Name()) {
+			continue
+		}
+		bin := p.KernelBin(e.Name())
+		fi, err := os.Stat(bin)
+		if err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		m := readKernelMeta(p, e.Name())
+		if m == nil || (m.Asset != "" && m.Asset != linuxAssetName(e.Name())) {
+			continue // 没有元信息或架构不符的目录不展示
+		}
+		it := InstalledKernel{Version: e.Name(), Size: fi.Size(), Active: bin == active}
+		it.SHA256, it.InstalledAt = m.SHA256, m.InstalledAt
+		if m.Size > 0 {
+			it.Size = m.Size
+		}
+		if it.InstalledAt == "" {
+			it.InstalledAt = fi.ModTime().Format("2006-01-02 15:04:05")
+		}
+		out = append(out, it)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].InstalledAt > out[j].InstalledAt })
+	return out
+}
+
+// cleanupKernels 只保留当前版本 + 最近 2 个历史版本，避免每个版本几十 MB 越堆越多。
+func cleanupKernels(p *Paths, keep string) {
+	ents, err := os.ReadDir(p.KernelDir())
+	if err != nil {
+		return
+	}
+	type cand struct {
+		name string
+		at   string
+	}
+	var dirs []cand
+	now := time.Now()
+	for _, e := range ents {
+		if !e.IsDir() || !kernelTagRE.MatchString(e.Name()) || e.Name() == keep {
+			continue
+		}
+		at := ""
+		if m := readKernelMeta(p, e.Name()); m != nil {
+			at = m.InstalledAt
+		}
+		if at == "" {
+			if fi, err := e.Info(); err == nil {
+				at = fi.ModTime().Format("2006-01-02 15:04:05")
+			}
+		}
+		dirs = append(dirs, cand{name: e.Name(), at: at})
+	}
+	sort.Slice(dirs, func(i, j int) bool { return dirs[i].at > dirs[j].at })
+	for i, d := range dirs {
+		if i < 2 {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(p.KernelDir(), d.name))
+	}
+	// 清理超过 1 小时的中断下载临时文件
+	for _, e := range ents {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), ".download-") {
+			continue
+		}
+		if fi, err := e.Info(); err == nil && now.Sub(fi.ModTime()) > time.Hour {
+			_ = os.Remove(filepath.Join(p.KernelDir(), e.Name()))
+		}
+	}
+}
+
+// ---------- 官方发行版列表 ----------
+
+func linuxAssetName(tag string) string {
+	return fmt.Sprintf("mihomo-linux-%s-%s.gz", runtime.GOARCH, tag)
+}
+
+func officialAssetURL(tag, asset string) string {
+	return fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", kernelRepo, tag, asset)
+}
+
+func trimNotes(s string) string {
+	if len(s) <= kernelNotesMax {
+		return s
+	}
+	cut := s[:kernelNotesMax]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut + "\n\n…（更新日志过长，已截断）"
+}
+
+func newKernelHTTPClient(timeout time.Duration, proxyAddr string) *http.Client {
+	tr := &http.Transport{
+		Proxy:                 nil,
+		ResponseHeaderTimeout: 25 * time.Second,
+		TLSHandshakeTimeout:   12 * time.Second,
+		IdleConnTimeout:       60 * time.Second,
+	}
+	if proxyAddr != "" {
+		if pu, err := url.Parse("http://" + proxyAddr); err == nil {
+			tr.Proxy = http.ProxyURL(pu)
+		}
+	}
+	return &http.Client{Timeout: timeout, Transport: tr}
+}
+
+func (a *App) kernelHTTPClients(timeout time.Duration) []*http.Client {
+	clients := []*http.Client{}
+	// 内核运行中时优先走本机代理：应用本身就是代理，国内直连 GitHub 往往失败，
+	// 而走当前订阅节点通常能稳定访问；代理不可用时再退回直连 + 加速镜像。
+	if a.Mihomo.Running() {
+		s := loadSettings()
+		clients = append(clients, newKernelHTTPClient(timeout, "127.0.0.1:"+strconv.Itoa(s.ProxyPort)))
+	}
+	clients = append(clients, newKernelHTTPClient(timeout, ""))
+	return clients
+}
+
+// listKernelReleases 拉取官方 Releases（失败时回落本地缓存），结果缓存 10 分钟。
+// 返回值：发行版列表、警告（使用缓存时说明原因）、缓存时间、错误。
+func (a *App) listKernelReleases(force bool) ([]KernelRelease, string, int64, error) {
+	kernelRelMu.Lock()
+	defer kernelRelMu.Unlock()
+
+	cachePath := filepath.Join(a.Paths.KernelDir(), "releases.json")
+	var cached *kernelReleaseCache
+	if b, err := os.ReadFile(cachePath); err == nil {
+		var c kernelReleaseCache
+		// 旧缓存没有 arch 字段，或来自另一种 CPU 架构时直接忽略，避免列出本机装不了的内核。
+		if json.Unmarshal(b, &c) == nil && len(c.Releases) > 0 && c.Arch == runtime.GOARCH {
+			c.Releases = filterReleasesForArch(c.Releases)
+			if len(c.Releases) > 0 {
+				cached = &c
+			}
+		}
+	}
+	if !force && cached != nil && time.Since(time.Unix(cached.FetchedAt, 0)) < kernelCacheTTL {
+		return cached.Releases, "", cached.FetchedAt, nil
+	}
+
+	var errs []string
+	budget := time.Now().Add(kernelAPITotalBudget)
+	for _, cl := range a.kernelHTTPClients(30 * time.Second) {
+		for _, u := range kernelAPIMirrors {
+			if time.Now().After(budget) {
+				errs = append(errs, "已超出获取版本列表的时限")
+				break
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), kernelAPIAttemptTimeout)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+			if err != nil {
+				cancel()
+				continue
+			}
+			req.Header.Set("User-Agent", "MihomoProxy-kernel")
+			req.Header.Set("Accept", "application/vnd.github+json")
+			resp, err := cl.Do(req)
+			if err != nil {
+				cancel()
+				errs = append(errs, shortErr(u, err))
+				continue
+			}
+			body, rerr := io.ReadAll(io.LimitReader(resp.Body, 24<<20))
+			resp.Body.Close()
+			cancel()
+			if rerr != nil {
+				errs = append(errs, hostOf(u)+": "+rerr.Error())
+				continue
+			}
+			if resp.StatusCode != http.StatusOK {
+				errs = append(errs, fmt.Sprintf("%s: HTTP %d", hostOf(u), resp.StatusCode))
+				continue
+			}
+			var raw []ghRelease
+			if err := json.Unmarshal(body, &raw); err != nil {
+				errs = append(errs, hostOf(u)+": 返回内容不是合法的发布列表")
+				continue
+			}
+			list := filterKernelReleases(raw)
+			if len(list) == 0 {
+				errs = append(errs, fmt.Sprintf("%s: 没有找到适用于 linux/%s 的发行版", hostOf(u), runtime.GOARCH))
+				continue
+			}
+			c := kernelReleaseCache{FetchedAt: time.Now().Unix(), Arch: runtime.GOARCH, Releases: list}
+			if b, err := json.MarshalIndent(c, "", "  "); err == nil {
+				_ = atomicWrite(cachePath, append(b, '\n'), 0o644)
+			}
+			return list, "", c.FetchedAt, nil
+		}
+	}
+
+	// 网络失败但本地有缓存：继续可用（设置页会提示列表可能不是最新）。
+	if cached != nil {
+		msg := "获取最新版本列表失败，当前显示的是缓存（" + time.Unix(cached.FetchedAt, 0).Format("2006-01-02 15:04") + "）"
+		if len(errs) > 0 {
+			msg += "：" + strings.Join(dedupe(errs, 4), "；")
+		}
+		return cached.Releases, msg, cached.FetchedAt, nil
+	}
+	if len(errs) == 0 {
+		errs = []string{"没有可用的下载地址"}
+	}
+	return nil, "", 0, fmt.Errorf("获取 Mihomo 官方版本列表失败：%s", strings.Join(dedupe(errs, 6), "；"))
+}
+
+// normalizeSHA 把 GitHub API 的 digest（"sha256:..."）规范成 64 位小写十六进制；非法返回空。
+func normalizeSHA(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.TrimPrefix(s, "sha256:")
+	if len(s) != 64 {
+		return ""
+	}
+	if _, err := hex.DecodeString(s); err != nil {
+		return ""
+	}
+	return s
+}
+
+// releaseFitsArch 判断发行版是否提供当前 CPU 架构的内核包。
+// 官方命名规则固定为 mihomo-linux-<goarch>-<tag>.gz，asset 名由后端拼装后比对。
+func releaseFitsArch(rel KernelRelease) bool {
+	return rel.Asset == linuxAssetName(rel.Tag)
+}
+
+// filterReleasesForArch 只保留当前架构可下载的版本（缓存 / 接口返回前再兜一层）。
+func filterReleasesForArch(list []KernelRelease) []KernelRelease {
+	out := make([]KernelRelease, 0, len(list))
+	for _, rel := range list {
+		if releaseFitsArch(rel) {
+			out = append(out, rel)
+		}
+	}
+	return out
+}
+
+func filterKernelReleases(raw []ghRelease) []KernelRelease {
+	out := []KernelRelease{}
+	for _, r := range raw {
+		if r.Draft || !kernelTagRE.MatchString(r.TagName) {
+			continue
+		}
+		want := linuxAssetName(r.TagName)
+		var asset *ghAsset
+		for i := range r.Assets {
+			if r.Assets[i].Name == want {
+				asset = &r.Assets[i]
+				break
+			}
+		}
+		if asset == nil {
+			continue
+		}
+		name := r.Name
+		if name == "" {
+			name = r.TagName
+		}
+		out = append(out, KernelRelease{
+			Tag:         r.TagName,
+			Name:        name,
+			PublishedAt: r.PublishedAt,
+			Prerelease:  r.Prerelease,
+			Notes:       trimNotes(r.Body),
+			Asset:       asset.Name,
+			Size:        asset.Size,
+			AssetSHA256: normalizeSHA(asset.Digest),
+		})
+	}
+	return out
+}
+
+// ---------- 下载 / 校验 ----------
+
+// idleCancelReader 在连续 timeout 时间内没有收到任何字节时取消请求。
+// 这样「慢但一直在传」的镜像可以继续下完，而「连上了却不发数据」的线路会很快失败。
+type idleCancelReader struct {
+	r       io.Reader
+	timer   *time.Timer
+	timeout time.Duration
+	idle    int32
+}
+
+func newIdleCancelReader(r io.Reader, timeout time.Duration, cancel context.CancelFunc) *idleCancelReader {
+	ir := &idleCancelReader{r: r, timeout: timeout}
+	ir.timer = time.AfterFunc(timeout, func() {
+		atomic.StoreInt32(&ir.idle, 1)
+		cancel()
+	})
+	return ir
+}
+
+func (ir *idleCancelReader) Read(p []byte) (int, error) {
+	n, err := ir.r.Read(p)
+	if n > 0 {
+		ir.timer.Reset(ir.timeout)
+	}
+	return n, err
+}
+
+func (ir *idleCancelReader) stop() { ir.timer.Stop() }
+
+func (ir *idleCancelReader) idleHit() bool { return atomic.LoadInt32(&ir.idle) == 1 }
+
+type kernelProgressReader struct {
+	r     io.Reader
+	a     *App
+	local int64
+}
+
+func (p *kernelProgressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	if n > 0 {
+		p.local += int64(n)
+		if p.local >= 256<<10 {
+			p.a.kernelAddProgress(p.local)
+			p.local = 0
+		}
+	}
+	return n, err
+}
+
+func sha256File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// verifyKernelBinary 确认下载到的是 Linux 可执行文件，并且 "mihomo -v" 报出的版本与 tag 一致。
+func verifyKernelBinary(path, version string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	magic := make([]byte, 4)
+	_, rerr := io.ReadFull(f, magic)
+	f.Close()
+	if rerr != nil || !bytes.Equal(magic, []byte{0x7f, 'E', 'L', 'F'}) {
+		return fmt.Errorf("下载的文件不是 Linux 可执行文件")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	out, runErr := exec.CommandContext(ctx, path, "-v").CombinedOutput()
+	text := string(out)
+	want := strings.TrimPrefix(version, "v")
+	if !strings.Contains(text, want) {
+		short := strings.TrimSpace(text)
+		if len(short) > 200 {
+			short = short[:200] + "…"
+		}
+		if short == "" {
+			if runErr != nil {
+				short = runErr.Error()
+			} else {
+				short = "无输出"
+			}
+		}
+		return fmt.Errorf("内核自检失败（期望 %s，实际输出：%s）", version, short)
+	}
+	return nil
+}
+
+// downloadKernel 依次尝试官方地址与各镜像，成功返回解压后的临时文件路径。
+func (a *App) downloadKernel(tag, asset string, size int64, wantSHA string) (string, error) {
+	dir := filepath.Join(a.Paths.KernelDir(), tag)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	official := officialAssetURL(tag, asset)
+	budget := time.Now().Add(kernelDownloadBudget)
+	var errs []string
+	clients := a.kernelHTTPClients(60 * time.Minute)
+	// 外层镜像、内层客户端：同一个镜像先走本机代理再走直连，
+	// 避免代理整条线路不可用时把时间全耗在代理上、迟迟轮不到直连。
+	for _, tpl := range kernelDownloadMirrors {
+		for _, cl := range clients {
+			if time.Now().After(budget) {
+				errs = append(errs, "已超出下载时限")
+				break
+			}
+			u := fmt.Sprintf(tpl, official)
+			a.kernelSet(func(s *KernelStatus) { s.Message = "正在从 " + hostOf(u) + " 下载…" })
+			path, err := a.downloadOnce(cl, u, tag, size, wantSHA)
+			if err == nil {
+				return path, nil
+			}
+			errs = append(errs, shortErr(u, err))
+		}
+	}
+	if len(errs) == 0 {
+		errs = []string{"没有可用的下载地址"}
+	}
+	return "", fmt.Errorf("内核下载失败：%s", strings.Join(dedupe(errs, 6), "；"))
+}
+
+func (a *App) downloadOnce(cl *http.Client, u, tag string, size int64, wantSHA string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), kernelDownloadAttempt)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "MihomoProxy-kernel")
+	resp, err := cl.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	if size <= 0 && resp.ContentLength > 0 {
+		size = resp.ContentLength
+	}
+	a.kernelSet(func(s *KernelStatus) {
+		s.Total = size
+		s.Downloaded = 0
+	})
+	body := newIdleCancelReader(resp.Body, kernelIdleTimeout, cancel)
+	defer body.stop()
+	hash := sha256.New()
+	raw := io.TeeReader(&kernelProgressReader{r: io.LimitReader(body, kernelMaxGzSize), a: a}, hash)
+	gz, err := gzip.NewReader(raw)
+	if err != nil {
+		if body.idleHit() {
+			return "", fmt.Errorf("下载停滞超过 %d 秒", int(kernelIdleTimeout/time.Second))
+		}
+		return "", fmt.Errorf("压缩包无效：%v", err)
+	}
+	defer gz.Close()
+
+	f, err := os.CreateTemp(filepath.Dir(filepath.Join(a.Paths.KernelDir(), tag, "mihomo")), ".download-*")
+	if err != nil {
+		return "", err
+	}
+	tmp := f.Name()
+	ok := false
+	defer func() {
+		if !ok {
+			f.Close()
+			os.Remove(tmp)
+		}
+	}()
+
+	n, err := io.Copy(f, io.LimitReader(gz, kernelMaxBinSize+1))
+	if err != nil {
+		if body.idleHit() {
+			return "", fmt.Errorf("下载停滞超过 %d 秒", int(kernelIdleTimeout/time.Second))
+		}
+		return "", err
+	}
+	if n > kernelMaxBinSize {
+		return "", fmt.Errorf("解压后超过大小上限")
+	}
+	if wantSHA != "" {
+		got := hex.EncodeToString(hash.Sum(nil))
+		if got != wantSHA {
+			return "", fmt.Errorf("官方 SHA256 校验失败（期望 %s…，实际 %s…）", wantSHA[:12], got[:12])
+		}
+	}
+	if err := f.Sync(); err != nil {
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(tmp, 0o755); err != nil {
+		return "", err
+	}
+	ok = true
+	return tmp, nil
+}
+
+// ensureKernelInstalled 保证 <var>/kernels/<tag>/mihomo 存在且可用；已存在则跳过下载。
+// wantSHA 为官方压缩包的 SHA256（拿不到时为空，仅做 ELF/版本校验）。
+func (a *App) ensureKernelInstalled(tag string, size int64, wantSHA string) error {
+	bin := a.Paths.KernelBin(tag)
+	if fi, err := os.Stat(bin); err == nil && fi.Mode().IsRegular() && fi.Size() > 1<<20 {
+		a.kernelSet(func(s *KernelStatus) {
+			s.Stage = "verifying"
+			s.Message = "本地已有该版本，正在校验…"
+		})
+		meta := readKernelMeta(a.Paths, tag)
+		// 有官方摘要时，还要求本地记录与之一致；老版本没记录过摘要则重新下载校验。
+		trusted := wantSHA == "" || (meta != nil && meta.AssetSHA256 == wantSHA)
+		if trusted && verifyKernelBinary(bin, tag) == nil {
+			return nil
+		}
+	}
+
+	tmp, err := a.downloadKernel(tag, linuxAssetName(tag), size, wantSHA)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp)
+
+	a.kernelSet(func(s *KernelStatus) {
+		s.Stage = "verifying"
+		s.Message = "下载完成，正在校验内核…"
+	})
+	if err := verifyKernelBinary(tmp, tag); err != nil {
+		return err
+	}
+	sha, err := sha256File(tmp)
+	if err != nil {
+		return err
+	}
+	dst := a.Paths.KernelBin(tag)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0o755); err != nil {
+		return err
+	}
+	// 直接 rename 覆盖旧文件（同一目录同一文件系统），失败时旧文件仍然可用。
+	if err := os.Rename(tmp, dst); err != nil {
+		return err
+	}
+	fi, _ := os.Stat(dst)
+	var sz int64
+	if fi != nil {
+		sz = fi.Size()
+	}
+	return writeKernelMeta(a.Paths, &KernelMeta{
+		Version:     tag,
+		Asset:       linuxAssetName(tag),
+		Size:        sz,
+		SHA256:      sha,
+		AssetSHA256: wantSHA,
+		InstalledAt: nowStr(),
+	})
+}
+
+// ---------- 激活 / 回滚 ----------
+
+// activateKernel 写入选中版本；内核运行中则先停后启，新内核起不来就回滚旧版本。
+func (a *App) activateKernel(version string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	old := loadKernelState(a.Paths)
+	oldVersion := ""
+	if old != nil {
+		oldVersion = old.Version
+	}
+	wasRunning := a.Mihomo.Running()
+	if wasRunning {
+		if err := a.Mihomo.Stop(); err != nil {
+			return fmt.Errorf("停止内核失败：%w", err)
+		}
+	}
+	if err := saveKernelState(a.Paths, &KernelState{Version: version, UpdatedAt: nowStr()}); err != nil {
+		if wasRunning {
+			_ = a.Mihomo.Start(a.Paths.ConfigFile())
+		}
+		return fmt.Errorf("保存内核选择失败：%w", err)
+	}
+	invalidateMihomoVersion()
+	if !wasRunning {
+		return nil
+	}
+	if err := a.Mihomo.Start(a.Paths.ConfigFile()); err != nil {
+		_ = saveKernelState(a.Paths, &KernelState{Version: oldVersion, UpdatedAt: nowStr()})
+		invalidateMihomoVersion()
+		if e2 := a.Mihomo.Start(a.Paths.ConfigFile()); e2 != nil {
+			return fmt.Errorf("新内核启动失败（%v），已回滚但原内核也未能启动：%v", err, e2)
+		}
+		return fmt.Errorf("新内核启动失败，已回滚到原版本：%v", err)
+	}
+	return nil
+}
+
+// ---------- 任务状态 ----------
+
+func (a *App) kernelSet(fn func(*KernelStatus)) {
+	a.kMu.Lock()
+	defer a.kMu.Unlock()
+	fn(&a.kSt)
+}
+
+func (a *App) kernelAddProgress(n int64) {
+	a.kMu.Lock()
+	defer a.kMu.Unlock()
+	a.kSt.Downloaded += n
+}
+
+func (a *App) KernelStatus() KernelStatus {
+	a.kMu.Lock()
+	defer a.kMu.Unlock()
+	return a.kSt
+}
+
+func (a *App) kernelFail(err error) {
+	a.kernelSet(func(s *KernelStatus) {
+		s.Busy = false
+		s.Stage = "error"
+		s.Error = err.Error()
+		s.Message = "切换失败"
+		s.FinishedAt = nowUnix()
+	})
+}
+
+func (a *App) kernelDone(version string) {
+	a.kernelSet(func(s *KernelStatus) {
+		s.Busy = false
+		s.Stage = "done"
+		s.Version = version
+		s.Message = "已切换到 " + version
+		s.Error = ""
+		s.FinishedAt = nowUnix()
+	})
+}
+
+// StartKernelSwitch 异步下载并切换内核；version 为空表示恢复随应用内置的内核。
+func (a *App) StartKernelSwitch(version string) error {
+	a.kMu.Lock()
+	if a.kSt.Busy {
+		a.kMu.Unlock()
+		return fmt.Errorf("已有内核切换任务正在进行中，请稍候")
+	}
+	a.kSt = KernelStatus{
+		Busy:      true,
+		Stage:     "queued",
+		Version:   version,
+		Message:   "正在准备…",
+		StartedAt: nowUnix(),
+	}
+	a.kMu.Unlock()
+	go a.runKernelSwitch(version)
+	return nil
+}
+
+func (a *App) runKernelSwitch(version string) {
+	defer func() {
+		if r := recover(); r != nil {
+			a.kernelFail(fmt.Errorf("内核切换异常：%v", r))
+		}
+	}()
+
+	if version != "" {
+		// 拿一次发行版信息以便显示下载大小、并取得官方 SHA256；列表获取失败不阻塞
+		//（下载地址由官方仓库 + tag 自行拼装，手动输入版本号也能用，只是没有摘要校验）。
+		var size int64
+		var wantSHA string
+		if releases, _, _, err := a.listKernelReleases(false); err == nil {
+			for _, r := range releases {
+				if r.Tag == version {
+					size = r.Size
+					wantSHA = r.AssetSHA256
+					break
+				}
+			}
+		}
+		if err := a.ensureKernelInstalled(version, size, wantSHA); err != nil {
+			a.kernelFail(err)
+			return
+		}
+	}
+
+	a.kernelSet(func(s *KernelStatus) {
+		s.Stage = "activating"
+		s.Message = "正在切换并重启内核…"
+	})
+	if err := a.activateKernel(version); err != nil {
+		a.kernelFail(err)
+		return
+	}
+	cleanupKernels(a.Paths, version)
+	if version == "" {
+		version = mihomoBundled
+		if version == "" {
+			version = "随应用内置"
+		}
+	}
+	a.kernelDone(version)
+}
+
+// ---------- HTTP 接口 ----------
+
+func (a *App) hMihomoKernel(w http.ResponseWriter, r *http.Request) {
+	active, source := a.Paths.MihomoVersion()
+	writeJSON(w, 200, map[string]any{
+		"active":    active,
+		"source":    source,
+		"bundled":   mihomoBundled,
+		"arch":      a.Paths.Arch,
+		"goarch":    runtime.GOARCH,
+		"dir":       a.Paths.KernelDir(),
+		"installed": installedKernels(a.Paths),
+		"status":    a.KernelStatus(),
+	})
+}
+
+func (a *App) hMihomoReleases(w http.ResponseWriter, r *http.Request) {
+	force := r.URL.Query().Get("refresh") == "1"
+	releases, warning, fetchedAt, err := a.listKernelReleases(force)
+	if err != nil {
+		writeErr(w, 502, err.Error())
+		return
+	}
+	// 双重保险：只返回当前架构能装的官方内核（缓存/镜像返回异常时也不会列错）。
+	releases = filterReleasesForArch(releases)
+	have := map[string]bool{}
+	for _, it := range installedKernels(a.Paths) {
+		have[it.Version] = true
+	}
+	for i := range releases {
+		releases[i].Downloaded = have[releases[i].Tag]
+	}
+	active, source := a.Paths.MihomoVersion()
+	writeJSON(w, 200, map[string]any{
+		"releases":   releases,
+		"warning":    warning,
+		"fetched_at": fetchedAt,
+		"active":     active,
+		"source":     source,
+		"bundled":    mihomoBundled,
+		"arch":       a.Paths.Arch,
+		"goarch":     runtime.GOARCH,
+	})
+}
+
+func (a *App) hMihomoSwitch(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Version string `json:"version"`
+		Builtin bool   `json:"builtin"`
+	}
+	b, _ := readBody(r, 1<<16)
+	if err := json.Unmarshal(b, &body); err != nil {
+		writeErr(w, 400, "请求体不是合法 JSON")
+		return
+	}
+	version := strings.TrimSpace(body.Version)
+	if body.Builtin {
+		version = ""
+	}
+	if version != "" && !kernelTagRE.MatchString(version) {
+		writeErr(w, 400, "版本号格式不正确（只支持 Mihomo 官方 vX.Y.Z 版本）")
+		return
+	}
+	if version == "" && !body.Builtin {
+		writeErr(w, 400, "缺少 version（或 builtin=true 恢复内置内核）")
+		return
+	}
+	if err := a.StartKernelSwitch(version); err != nil {
+		writeErr(w, 409, err.Error())
+		return
+	}
+	writeJSON(w, 202, map[string]any{"ok": true, "status": a.KernelStatus()})
+}

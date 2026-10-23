@@ -30,6 +30,10 @@ type App struct {
 	swInfoAt   int64
 	swInfoErr  bool
 	swCheckAt  int64 // 上次实际检测（探测）的时间，用于按用户配置的间隔限流
+
+	// 内核版本在线切换（设置页「切换版本」）的任务状态
+	kMu sync.Mutex
+	kSt KernelStatus
 }
 
 func NewApp(p *Paths) *App {

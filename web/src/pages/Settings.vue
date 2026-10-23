@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, inject, onMounted } from 'vue'
+import { ref, computed, inject, onMounted, onUnmounted } from 'vue'
 import { api } from '../api'
 import { DONATE_WX, DONATE_ALI } from '../donate'
 
@@ -19,6 +19,160 @@ const cfg = ref('')
 const showCfg = ref(false)
 const busy = ref(false)
 const rules = ref({})
+
+// ===================== 内核版本在线切换 =====================
+// 「版本信息」里内核版本右侧的「切换版本」按钮：从 Mihomo 官方仓库在线下载其他版本并启用。
+const kModal = ref(false)
+const kReleases = ref([])
+const kLoading = ref(false)
+const kError = ref('')
+const kWarning = ref('')
+const kFetchedAt = ref(0)
+const kShowPre = ref(false)
+const kInfo = ref({})
+const kStatus = ref({ busy: false })
+const kExpanded = ref({})
+const kManual = ref('')
+let kTimer = null
+
+const kActive = computed(() => kInfo.value.active || info.value.mihomo || '')
+const kSource = computed(() => kInfo.value.source || info.value.mihomo_source || 'builtin')
+const kGoarch = computed(() => kInfo.value.goarch || '')
+const kShowList = computed(() => {
+  const arch = kGoarch.value
+  return (kReleases.value || []).filter((r) => {
+    if (!kShowPre.value && r.prerelease) return false
+    // 只显示当前架构的内核包：官方 asset 名为 mihomo-linux-<goarch>-<tag>.gz
+    if (arch && r.asset && !r.asset.includes('-linux-' + arch + '-')) return false
+    return true
+  })
+})
+const kPercent = computed(() => {
+  const s = kStatus.value || {}
+  if (!s.total || s.total <= 0) return 0
+  return Math.max(0, Math.min(100, Math.round((Number(s.downloaded || 0) / Number(s.total)) * 100)))
+})
+const kStatusText = computed(() => {
+  const s = kStatus.value || {}
+  if (s.error) return '切换失败：' + s.error
+  if (!s.busy) return s.stage === 'done' ? (s.message || '已切换完成') : ''
+  const map = { queued: '准备中…', downloading: '正在下载内核…', verifying: '正在校验内核…', activating: '正在重启内核…' }
+  return map[s.stage] || s.message || '处理中…'
+})
+
+function fmtKTime(v) {
+  if (!v) return '—'
+  const d = new Date(v)
+  return isNaN(d.getTime()) ? v : d.toLocaleString()
+}
+function fmtKSize(n) {
+  if (!n) return ''
+  return (Number(n) / 1048576).toFixed(1) + ' MB'
+}
+function syncInfoFromKernel(s) {
+  if (!s) return
+  info.value = { ...info.value, mihomo: s.active, mihomo_source: s.source, mihomo_bundled: s.bundled }
+}
+function stopKernelPoll() {
+  if (kTimer) { clearInterval(kTimer); kTimer = null }
+}
+function startKernelPoll() {
+  if (kTimer) return
+  kTimer = setInterval(async () => {
+    try {
+      const s = await api.get('/api/mihomo/kernel')
+      kInfo.value = s || {}
+      syncInfoFromKernel(s)
+      kStatus.value = (s && s.status) || { busy: false }
+      if (!kStatus.value.busy) {
+        stopKernelPoll()
+        if (kStatus.value.stage === 'done') notify(kStatus.value.message || '内核切换完成')
+        else if (kStatus.value.error) notify('内核切换失败：' + kStatus.value.error, true)
+        await refreshAfterSwitch()
+        loadReleases(false)
+      }
+    } catch (e) { /* 轮询失败：下次再试 */ }
+  }, 900)
+}
+async function loadKernel() {
+  try {
+    kInfo.value = await api.get('/api/mihomo/kernel')
+    syncInfoFromKernel(kInfo.value)
+    if (kInfo.value && kInfo.value.status) kStatus.value = kInfo.value.status
+    if (kStatus.value && kStatus.value.busy) startKernelPoll()
+  } catch (e) { /* 忽略 */ }
+}
+async function loadReleases(force) {
+  kLoading.value = true
+  kError.value = ''
+  try {
+    const r = await api.get('/api/mihomo/releases' + (force ? '?refresh=1' : ''))
+    kReleases.value = r.releases || []
+    kWarning.value = r.warning || ''
+    kFetchedAt.value = r.fetched_at || 0
+    kInfo.value = { ...kInfo.value, arch: r.arch || kInfo.value.arch, goarch: r.goarch || kInfo.value.goarch }
+    if (r.active) {
+      kInfo.value = { ...kInfo.value, active: r.active, source: r.source, bundled: r.bundled }
+      syncInfoFromKernel({ active: r.active, source: r.source, bundled: r.bundled })
+    }
+  } catch (e) {
+    kError.value = e.message
+  } finally {
+    kLoading.value = false
+  }
+}
+function openKernel() {
+  kModal.value = true
+  loadKernel()
+  if (!kReleases.value.length) loadReleases(false)
+}
+function closeKernel() {
+  if (kStatus.value && kStatus.value.busy) notify('内核正在下载/切换，关闭窗口不会中断任务')
+  kModal.value = false
+  stopKernelPoll()
+}
+function toggleKNotes(tag) {
+  kExpanded.value = { ...kExpanded.value, [tag]: !kExpanded.value[tag] }
+}
+async function refreshAfterSwitch() {
+  try {
+    info.value = await api.get('/api/version')
+    rememberAppVer(info.value && info.value.app)
+  } catch (e) { /* 忽略 */ }
+  await loadKernel()
+  await loadStatus()
+}
+async function doSwitch(rel) {
+  if (kStatus.value && kStatus.value.busy) { notify('已有切换任务在进行中', true); return }
+  kStatus.value = { busy: true, stage: 'queued', version: rel.tag, message: '正在准备…' }
+  try {
+    await api.post('/api/mihomo/switch', { version: rel.tag })
+    startKernelPoll()
+  } catch (e) {
+    kStatus.value = { busy: false, stage: 'error', error: e.message }
+    notify(e.message, true)
+  }
+}
+async function manualSwitch() {
+  const v = (kManual.value || '').trim()
+  if (!/^v\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?$/.test(v)) {
+    notify('版本号格式应类似 v1.19.33', true)
+    return
+  }
+  await doSwitch({ tag: v, downloaded: false, size: 0 })
+}
+async function restoreBuiltin() {
+  if (kStatus.value && kStatus.value.busy) { notify('已有切换任务在进行中', true); return }
+  kStatus.value = { busy: true, stage: 'queued', version: '', message: '正在恢复内置内核…' }
+  try {
+    await api.post('/api/mihomo/switch', { builtin: true })
+    startKernelPoll()
+  } catch (e) {
+    kStatus.value = { busy: false, stage: 'error', error: e.message }
+    notify(e.message, true)
+  }
+}
+onUnmounted(stopKernelPoll)
 
 // 代理/订阅两张卡片：「保存」按钮只在值有改动时可点（与自动切换参数卡片一致的脏值判断）
 const saved = ref(null)
@@ -319,7 +473,17 @@ onMounted(load)
     <table>
       <tbody>
         <tr><th style="width:180px">应用版本</th><td class="mono" id="appVerCell">{{ appVer || '读取中…' }}</td></tr>
-        <tr><th>内核版本</th><td class="mono">{{ info.mihomo || '未知' }}</td></tr>
+        <tr>
+          <th>内核版本</th>
+          <td>
+            <span class="mono" id="kernelVerCell">{{ info.mihomo || '未知' }}</span>
+            <span class="badge" :class="info.mihomo_source === 'online' ? 'on' : 'off'" style="margin-left:8px">
+              {{ info.mihomo_source === 'online' ? '在线下载' : '随应用内置' }}
+            </span>
+            <span class="muted" v-if="info.mihomo_source === 'online'">（内置 {{ info.mihomo_bundled || '—' }}）</span>
+            <button class="sm primary" id="switchKernelBtn" style="margin-left:10px" @click="openKernel">切换版本</button>
+          </td>
+        </tr>
         <tr>
           <th>规则版本</th>
           <td class="mono">{{ info.rules || '—' }}<span class="muted"> {{ rulesOrigin }}</span></td>
@@ -341,6 +505,10 @@ onMounted(load)
         </tr>
       </tbody>
     </table>
+    <div class="muted" style="margin-top:10px">
+      点「<span class="kw kw-act">切换版本</span>」可在线下载并启用 <span class="kw kw-key">Mihomo 官方仓库</span>发布的其他内核版本（附官方更新日志），
+      <span class="kw kw-warn">切换时内核会短暂重启</span>，订阅与配置不受影响；也可以随时<span class="kw kw-act">恢复内置版本</span>。
+    </div>
   </div>
 
   <!-- ===================== 5. 数据说明 ===================== -->
@@ -398,4 +566,159 @@ onMounted(load)
       <p class="muted" style="margin:4px auto 0">谢谢你的每一份支持 🙏</p>
     </div>
   </div>
+
+  <!-- ===================== 内核版本切换弹窗 ===================== -->
+  <Teleport to="body">
+    <div v-if="kModal" class="k-mask" @click.self="closeKernel">
+      <div class="k-panel" role="dialog" aria-modal="true" aria-label="切换内核版本">
+        <div class="k-head">
+          <div>
+            <h2>切换 Mihomo 内核版本</h2>
+            <div class="muted k-sub">
+              当前：<b class="mono">{{ kActive || '未知' }}</b>
+              <span class="badge" :class="kSource === 'online' ? 'on' : 'off'">{{ kSource === 'online' ? '在线下载' : '随应用内置' }}</span>
+              <span class="muted" v-if="kSource === 'online'">（内置 {{ kInfo.bundled || '—' }}）</span>
+              <span class="badge off" v-if="kGoarch" title="只显示本机 CPU 架构可用的内核">linux/{{ kGoarch }}</span>
+            </div>
+          </div>
+          <button class="k-x" @click="closeKernel" aria-label="关闭">✕</button>
+        </div>
+
+        <div class="k-progress-wrap" v-if="kStatus.busy || kStatus.error || kStatus.stage === 'done'">
+          <div class="k-progress" v-if="kStatus.busy"><i :style="{ width: (kStatus.stage === 'downloading' && kPercent) ? kPercent + '%' : '38%' }"></i></div>
+          <div class="k-progress-text" :class="{ err: !!kStatus.error }">{{ kStatusText }}</div>
+        </div>
+
+        <div class="k-body">
+          <div class="k-topline">
+            <div class="muted">
+              以下版本全部来自 Mihomo 官方仓库
+              <a class="link" href="https://github.com/MetaCubeX/mihomo/releases" target="_blank" rel="noopener">MetaCubeX/mihomo ↗</a>，
+              更新日志也来自官方 Release。<b class="kw kw-ok">只显示当前架构</b>
+              <span class="kw kw-val">linux/{{ kGoarch || '—' }}</span> 可用的内核，其他架构的包不会出现。
+              切换后内核会<span class="kw kw-warn">短暂重启</span>，订阅与配置不受影响。
+            </div>
+            <div class="k-actions">
+              <label class="k-check"><input type="checkbox" v-model="kShowPre" /> 显示预发布</label>
+              <button class="sm" :disabled="kLoading" @click="loadReleases(true)">{{ kLoading ? '刷新中…' : '刷新列表' }}</button>
+            </div>
+          </div>
+
+          <div class="notice" v-if="kWarning" style="margin-top:10px">{{ kWarning }}</div>
+          <div class="errbox" v-if="kError" style="margin-top:10px">{{ kError }}</div>
+
+          <div class="k-manual" v-if="kError">
+            <div class="muted">如果列表一直拿不到，可以直接填 Mihomo 官方版本号（只支持官方 <span class="kw kw-val">vX.Y.Z</span>）：</div>
+            <div class="row" style="margin-top:6px">
+              <input v-model="kManual" class="k-input" placeholder="例如 v1.19.33" @keyup.enter="manualSwitch" />
+              <button class="primary sm" :disabled="kStatus.busy" @click="manualSwitch">按此版本下载</button>
+            </div>
+          </div>
+
+          <div class="k-list">
+            <div v-if="kLoading && !kReleases.length" class="empty">正在获取 Mihomo 官方版本列表…</div>
+            <div v-else-if="!kShowList.length && !kError" class="empty">没有适用于 linux/{{ kGoarch || '当前架构' }} 的可用版本</div>
+            <div v-for="rel in kShowList" :key="rel.tag" class="k-rel" :class="{ active: rel.tag === kActive }">
+              <div class="k-rel-top">
+                <div class="k-rel-name">
+                  <b class="mono">{{ rel.tag }}</b>
+                  <span class="badge on" v-if="rel.tag === kActive">当前使用</span>
+                  <span class="badge warn" v-if="rel.prerelease">预发布</span>
+                  <span class="badge fast" v-if="rel.downloaded && rel.tag !== kActive">已下载</span>
+                </div>
+                <div class="k-rel-act">
+                  <span class="muted" v-if="rel.size">{{ fmtKSize(rel.size) }}</span>
+                  <button class="primary sm" :disabled="kStatus.busy || rel.tag === kActive" @click="doSwitch(rel)">
+                    {{ rel.tag === kActive ? '使用中' : (rel.downloaded ? '使用此版本' : '下载并使用') }}
+                  </button>
+                </div>
+              </div>
+              <div class="k-rel-meta muted">
+                {{ rel.name }}<span v-if="rel.published_at"> · 发布于 {{ fmtKTime(rel.published_at) }}</span>
+              </div>
+              <div class="k-notes" :class="{ open: kExpanded[rel.tag] }">
+                <pre v-if="rel.notes">{{ rel.notes }}</pre>
+                <div v-else class="muted">该版本没有填写更新日志。</div>
+              </div>
+              <button class="k-toggle" v-if="rel.notes" @click="toggleKNotes(rel.tag)">
+                {{ kExpanded[rel.tag] ? '收起更新日志' : '展开更新日志' }}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="k-foot">
+          <div class="muted">
+            下载的内核保存在应用私有目录，<span class="kw kw-ok">升级应用不会丢失</span>；只保留最近 2 个历史版本。
+            <span v-if="kFetchedAt">列表更新于 {{ fmtKTime(kFetchedAt * 1000) }}。</span>
+          </div>
+          <button class="sm" v-if="kSource === 'online'" :disabled="kStatus.busy" @click="restoreBuiltin">恢复内置版本</button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
 </template>
+
+<style scoped>
+.k-mask {
+  position: fixed; inset: 0; z-index: 60; padding: 18px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(3, 10, 20, .62); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+}
+.k-panel {
+  width: min(820px, 100%); max-height: 88vh; display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--border2); border-radius: 16px;
+  box-shadow: 0 24px 70px -24px var(--shadow); overflow: hidden;
+}
+.k-head {
+  display: flex; align-items: flex-start; gap: 12px; padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--border); background: var(--panel-soft);
+}
+.k-head h2 { font-size: 16px; margin: 0 0 6px; }
+.k-sub { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.k-x {
+  margin-left: auto; width: 30px; height: 30px; padding: 0; border-radius: 8px;
+  background: transparent; border: 1px solid transparent; color: var(--muted); font-size: 15px;
+}
+.k-x:hover { background: var(--hover); color: var(--fg); border-color: var(--border2); }
+.k-progress-wrap { padding: 10px 18px 0; }
+.k-progress { height: 6px; border-radius: 99px; background: var(--soft); overflow: hidden; }
+.k-progress > i {
+  display: block; height: 100%; border-radius: 99px;
+  background: linear-gradient(90deg, var(--primary), var(--neon2));
+  transition: width .35s ease; box-shadow: 0 0 10px -2px var(--primary);
+}
+.k-progress-text { margin-top: 6px; font-size: 12.5px; color: var(--muted); }
+.k-progress-text.err { color: var(--err-fg); }
+.k-body { padding: 12px 18px 4px; overflow: auto; }
+.k-topline { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.k-topline > .muted { flex: 1 1 420px; line-height: 1.7; }
+.k-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.k-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+.k-manual { margin-top: 10px; padding: 10px 12px; border: 1px dashed var(--border2); border-radius: 10px; background: var(--panel-soft); }
+.k-input { padding: 6px 10px; border: 1px solid var(--border2); border-radius: 8px; background: var(--panel); color: var(--fg); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; width: 180px; }
+.k-input:focus { outline: none; border-color: var(--primary); box-shadow: var(--ring); }
+.k-list { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; padding-bottom: 6px; }
+.k-rel { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; background: var(--panel); transition: border-color var(--trans), background-color var(--trans); }
+.k-rel:hover { border-color: var(--border2); background: var(--panel-soft); }
+.k-rel.active { border-color: var(--active-border); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--active-border); }
+.k-rel-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.k-rel-name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; }
+.k-rel-act { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.k-rel-meta { font-size: 12.5px; margin-top: 4px; }
+.k-notes { margin-top: 8px; position: relative; border-radius: 8px; background: var(--soft2); padding: 8px 10px; max-height: 92px; overflow: hidden; }
+.k-notes.open { max-height: 420px; overflow: auto; }
+.k-notes pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.65; color: var(--fg2); }
+.k-toggle { margin-top: 5px; padding: 3px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; color: var(--primary); }
+.k-toggle:hover { background: var(--hover); border-color: var(--border2); }
+.k-foot {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 18px 14px; border-top: 1px solid var(--border); background: var(--panel-soft); font-size: 12.5px;
+}
+.k-foot > .muted { flex: 1 1 420px; line-height: 1.6; }
+@media (max-width: 640px) {
+  .k-mask { padding: 0; }
+  .k-panel { max-height: 100vh; height: 100%; border-radius: 0; border: none; }
+  .k-rel-act { margin-left: 0; width: 100%; justify-content: flex-end; }
+}
+</style>

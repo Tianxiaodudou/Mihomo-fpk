@@ -19,7 +19,7 @@ import (
 var appVersion = "1.0.17"
 
 // mihomoBundled 是打包进 fpk 的内核版本号（tools/build.py 注入 -X main.mihomoBundled=<MIHOMO_VERSION>）。
-// 设置页「内核版本」始终显示它：内核没启动时也照常显示版本号，不再显示「未运行」。
+// 设置页「内核版本」显示当前生效的版本：用户在线切换过就是下载的版本，否则就是它。
 var mihomoBundled = ""
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -73,6 +73,11 @@ func (a *App) Register(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /api/settings", a.hSettingsGet)
 	mux.HandleFunc("PUT /api/settings", a.hSettingsSet)
+
+	// 内核版本在线切换（官方 Mihomo Releases）
+	mux.HandleFunc("GET /api/mihomo/releases", a.hMihomoReleases)
+	mux.HandleFunc("GET /api/mihomo/kernel", a.hMihomoKernel)
+	mux.HandleFunc("POST /api/mihomo/switch", a.hMihomoSwitch)
 }
 
 var (
@@ -108,16 +113,27 @@ func (a *App) mihomoVersion() string {
 	return mihomoVer
 }
 
+// invalidateMihomoVersion 清掉运行内核版本的 60s 缓存（切换内核后立即重新读取）。
+func invalidateMihomoVersion() {
+	mihomoVerMu.Lock()
+	mihomoVer = ""
+	mihomoVerTime = time.Time{}
+	mihomoVerMu.Unlock()
+}
+
 func (a *App) hVersion(w http.ResponseWriter, r *http.Request) {
 	rulesVer, rulesOrigin := RulesVersion(a.Paths.Var)
+	mihomoVer, mihomoSource := a.Paths.MihomoVersion()
 	writeJSON(w, 200, map[string]any{
-		"app":           appVersion,
-		"rules":         rulesVer,
-		"rules_origin":  rulesOrigin,
-		"mihomo":        mihomoBundled,
-		"go":            runtime.Version(),
-		"arch":          a.Paths.Arch,
-		"gatewayPrefix": a.Paths.GatewayPrefix,
+		"app":            appVersion,
+		"rules":          rulesVer,
+		"rules_origin":   rulesOrigin,
+		"mihomo":         mihomoVer,
+		"mihomo_source":  mihomoSource,
+		"mihomo_bundled": mihomoBundled,
+		"go":             runtime.Version(),
+		"arch":           a.Paths.Arch,
+		"gatewayPrefix":  a.Paths.GatewayPrefix,
 	})
 }
 
@@ -134,30 +150,30 @@ func (a *App) hStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	swInfo, swAt, swErr := a.AutoSwitchInfo()
 	writeJSON(w, 200, map[string]any{
-		"running":       a.Mihomo.Running(),
-		"port":          s.ProxyPort,
-		"listen":        "0.0.0.0:" + strconv.Itoa(s.ProxyPort),
-		"arch":          a.Paths.Arch,
-		"app_version":   appVersion,
+		"running":        a.Mihomo.Running(),
+		"port":           s.ProxyPort,
+		"listen":         "0.0.0.0:" + strconv.Itoa(s.ProxyPort),
+		"arch":           a.Paths.Arch,
+		"app_version":    appVersion,
 		"mihomo_version": mv,
-		"sub_count":     len(a.Subs.List()),
-		"node_count":    len(nodes),
-		"group_count":   len(groups),
-		"updating":      a.updating,
-		"last_update":   s.LastUpdate,
-		"auto_update":   s.AutoUpdateEnabled,
-		"auto_hours":    s.AutoUpdateHours,
-		"last_error":    a.Mihomo.LastError(),
-		"notices":       a.notices,
-		"active_id":     activeID,
-		"active_sub":    activeName,
-		"auto_switch":   s.AutoSwitch,
-		"switch_info":   swInfo,
-		"switch_at":     swAt,
-		"switch_err":    swErr,
-		"config_file":   a.Paths.ConfigFile(),
-		"socket":        a.Paths.MihomoSock(),
-		"now":           nowStr(),
+		"sub_count":      len(a.Subs.List()),
+		"node_count":     len(nodes),
+		"group_count":    len(groups),
+		"updating":       a.updating,
+		"last_update":    s.LastUpdate,
+		"auto_update":    s.AutoUpdateEnabled,
+		"auto_hours":     s.AutoUpdateHours,
+		"last_error":     a.Mihomo.LastError(),
+		"notices":        a.notices,
+		"active_id":      activeID,
+		"active_sub":     activeName,
+		"auto_switch":    s.AutoSwitch,
+		"switch_info":    swInfo,
+		"switch_at":      swAt,
+		"switch_err":     swErr,
+		"config_file":    a.Paths.ConfigFile(),
+		"socket":         a.Paths.MihomoSock(),
+		"now":            nowStr(),
 	})
 }
 

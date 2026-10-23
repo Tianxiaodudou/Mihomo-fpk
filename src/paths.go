@@ -51,11 +51,11 @@ func NewPaths() *Paths {
 		appdest = wd
 	}
 	p := &Paths{
-		AppDest:       appdest,
-		Etc:           envOr("TRIM_PKGETC", filepath.Join(appdest, "etc")),
-		Var:           envOr("TRIM_PKGVAR", filepath.Join(appdest, "var")),
-		Tmp:           envOr("TRIM_PKGTMP", filepath.Join(appdest, "tmp")),
-		Home:          envOr("TRIM_PKGHOME", filepath.Join(appdest, "home")),
+		AppDest: appdest,
+		Etc:     envOr("TRIM_PKGETC", filepath.Join(appdest, "etc")),
+		Var:     envOr("TRIM_PKGVAR", filepath.Join(appdest, "var")),
+		Tmp:     envOr("TRIM_PKGTMP", filepath.Join(appdest, "tmp")),
+		Home:    envOr("TRIM_PKGHOME", filepath.Join(appdest, "home")),
 		// 网关环境变量：飞牛实际注入的是 TRIM_* 系列（GA 应用实测），FNNAS_* 作为兼容备选。
 		GatewaySocket: firstEnv("TRIM_GATEWAY_SOCKET", "FNNAS_GATEWAY_SOCKET"),
 		GatewayPrefix: firstEnv("TRIM_GATEWAY_PREFIX", "FNNAS_GATEWAY_PREFIX"),
@@ -83,8 +83,21 @@ func (p *Paths) SettingsFile() string { return filepath.Join(p.Etc, "settings.js
 func (p *Paths) MihomoSock() string   { return filepath.Join(p.Var, "mihomo.sock") }
 func (p *Paths) MihomoPid() string    { return filepath.Join(p.Var, "mihomo.pid") }
 func (p *Paths) MihomoLog() string    { return filepath.Join(p.Var, "mihomo.log") }
-func (p *Paths) MihomoBin() string    { return filepath.Join(p.AppDest, "bin", p.Arch, "mihomo") }
-func (p *Paths) PowerFile() string    { return filepath.Join(p.Var, "power.state") }
+
+// MihomoBin 返回实际启动的内核：用户在线下载并选中的版本优先，否则用包内自带内核。
+func (p *Paths) MihomoBin() string {
+	bin, _ := p.activeKernelBin()
+	return bin
+}
+
+// MihomoVersion 返回当前生效的内核版本与来源（online / builtin）。
+func (p *Paths) MihomoVersion() (version, source string) {
+	if _, v := p.activeKernelBin(); v != "" {
+		return v, "online"
+	}
+	return mihomoBundled, "builtin"
+}
+func (p *Paths) PowerFile() string { return filepath.Join(p.Var, "power.state") }
 
 func (p *Paths) EnsureDirs() error {
 	for _, d := range []string{p.Etc, p.Var, p.Tmp, p.Home} {

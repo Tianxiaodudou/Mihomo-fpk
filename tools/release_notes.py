@@ -206,13 +206,14 @@ def sync_manifest(version: str | None, date: str | None, desc: str | None) -> st
 # ---------- Release 说明 ----------
 
 def render_notes(version: str, date: str, section: str) -> str:
-    kern = "v1.19.32"
+    kern = os.environ.get("MIHOMO_VERSION", "v1.19.32")
     return (
         f"显式代理（MihomoProxy）v{version} 自动构建产物。\n\n"
         f"## 本次更新（{date}）\n\n{section}\n\n"
         "## 安装\n\n"
         f"- 飞牛 fnOS → 应用中心 → 手动安装，按 NAS 架构选对应包（x86_64 / aarch64 各一个 `.fpk`，文件名形如 `{version}-x86_64-MihomoProxy.fpk`）\n"
         f"- 包内已内置 mihomo 内核（{kern}）与 Web 控制台，无需额外下载；升级不会清除已有的订阅与规则\n"
+        "- 想换内核版本时，可在「设置 → 版本信息 → 内核版本」右侧点「切换版本」，在线下载 Mihomo 官方发布的其他版本（附官方更新日志），无需升级应用\n"
     )
 
 
