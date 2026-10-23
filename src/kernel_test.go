@@ -9,7 +9,7 @@ import (
 )
 
 func TestKernelTagRE(t *testing.T) {
-	valid := []string{"v1.19.33", "v1.19.32", "v1.0.0", "v1.19.33-alpha.1"}
+	valid := []string{"v1.19.33", "v1.19.32", "v1.0.0", "v1.19.33-alpha.1", "v0.0.0-local1729680000123456789"}
 	for _, s := range valid {
 		if !kernelTagRE.MatchString(s) {
 			t.Fatalf("应接受版本号 %q", s)

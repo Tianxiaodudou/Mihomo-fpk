@@ -90,12 +90,31 @@ func (p *Paths) MihomoBin() string {
 	return bin
 }
 
-// MihomoVersion 返回当前生效的内核版本与来源（online / builtin）。
+// MihomoVersion 返回当前生效的内核版本与来源（online / local / builtin）。
+// 本地文件内核的目录标识是 v0.0.0-local*，展示时优先用 mihomo -v 识别出的真实版本。
 func (p *Paths) MihomoVersion() (version, source string) {
-	if _, v := p.activeKernelBin(); v != "" {
-		return v, "online"
+	_, key := p.activeKernelBin()
+	if key == "" {
+		return mihomoBundled, "builtin"
 	}
-	return mihomoBundled, "builtin"
+	label, src := key, "online"
+	if st := loadKernelState(p); st != nil {
+		if st.Label != "" {
+			label = st.Label
+		}
+		if st.Source != "" {
+			src = st.Source
+		}
+	}
+	if m := readKernelMeta(p, key); m != nil {
+		if m.Label != "" {
+			label = m.Label
+		}
+		if m.Source != "" {
+			src = m.Source
+		}
+	}
+	return label, src
 }
 func (p *Paths) PowerFile() string { return filepath.Join(p.Var, "power.state") }
 

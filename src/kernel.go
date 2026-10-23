@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -64,18 +66,25 @@ var kernelDownloadMirrors = []string{
 // 只接受官方语义化版本 tag（例如 v1.19.33）；Prerelease-Alpha 之类直接忽略。
 var kernelTagRE = regexp.MustCompile(`^v\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?$`)
 
+// 从 "mihomo -v" 输出里提取版本号（输出形如 "Mihomo Meta v1.19.33 linux amd64 ..."）。
+var kernelVersionOutputRE = regexp.MustCompile(`v\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?`)
+
 // KernelState 记录当前选中的内核版本；Version 为空表示跟随随应用内置的内核。
 type KernelState struct {
-	Version   string `json:"version"`
+	Version   string `json:"version"`            // 内核目录标识（在线版为 tag，本地文件为 v0.0.0-local*）
+	Label     string `json:"label,omitempty"`    // 展示用版本号（本地文件从 mihomo -v 识别）
+	Source    string `json:"source,omitempty"`   // online / local / builtin
 	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
 // KernelMeta 记录某个已下载内核的来源与校验信息。
 type KernelMeta struct {
 	Version     string `json:"version"`
-	Asset       string `json:"asset"`
+	Label       string `json:"label,omitempty"`  // 展示用版本号（本地文件从 mihomo -v 识别）
+	Source      string `json:"source,omitempty"` // online / local
+	Asset       string `json:"asset"`            // 在线版为官方 asset 名；本地文件为原文件名
 	Size        int64  `json:"size"`
-	SHA256      string `json:"sha256"`       // 解压后可执行文件的 SHA256
+	SHA256      string `json:"sha256"`                 // 解压后可执行文件的 SHA256
 	AssetSHA256 string `json:"asset_sha256,omitempty"` // 官方压缩包的 SHA256（校验镜像完整性）
 	InstalledAt string `json:"installed_at"`
 }
@@ -97,6 +106,8 @@ type KernelRelease struct {
 // InstalledKernel 是本地已下载的内核版本。
 type InstalledKernel struct {
 	Version     string `json:"version"`
+	Label       string `json:"label,omitempty"`
+	Source      string `json:"source,omitempty"`
 	Size        int64  `json:"size"`
 	SHA256      string `json:"sha256"`
 	InstalledAt string `json:"installed_at"`
@@ -183,13 +194,17 @@ func saveKernelState(p *Paths, st *KernelState) error {
 	return atomicWrite(p.KernelStateFile(), append(b, '\n'), 0o600)
 }
 
-// activeKernelBin 返回实际会被启动的内核路径：优先用户在线下载的版本，否则包内自带。
+// activeKernelBin 返回实际会被启动的内核路径：优先用户在线下载/本地导入的版本，否则包内自带。
 func (p *Paths) activeKernelBin() (string, string) {
 	if st := loadKernelState(p); st != nil && st.Version != "" {
 		bin := p.KernelBin(st.Version)
 		if fi, err := os.Stat(bin); err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0 {
-			// 只有 meta 记录为当前架构的包才启用，避免把另一种 CPU 架构的内核当成本机版本。
-			if m := readKernelMeta(p, st.Version); m != nil && m.Asset == linuxAssetName(st.Version) {
+			m := readKernelMeta(p, st.Version)
+			if m == nil {
+				return p.BundledMihomoBin(), ""
+			}
+			// 在线版必须是当前架构的包；本地文件不比较官方 asset 名（导入时已校验可执行）。
+			if m.Source == "local" || m.Asset == linuxAssetName(st.Version) {
 				return bin, st.Version
 			}
 		}
@@ -235,10 +250,20 @@ func installedKernels(p *Paths) []InstalledKernel {
 			continue
 		}
 		m := readKernelMeta(p, e.Name())
-		if m == nil || (m.Asset != "" && m.Asset != linuxAssetName(e.Name())) {
-			continue // 没有元信息或架构不符的目录不展示
+		if m == nil {
+			continue // 没有元信息的目录不展示
+		}
+		if m.Source != "local" && m.Asset != linuxAssetName(e.Name()) {
+			continue // 在线版必须是当前架构的官方包
 		}
 		it := InstalledKernel{Version: e.Name(), Size: fi.Size(), Active: bin == active}
+		it.Label, it.Source = m.Label, m.Source
+		if it.Label == "" {
+			it.Label = e.Name()
+		}
+		if it.Source == "" {
+			it.Source = "online"
+		}
 		it.SHA256, it.InstalledAt = m.SHA256, m.InstalledAt
 		if m.Size > 0 {
 			it.Size = m.Size
@@ -560,36 +585,47 @@ func sha256File(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// verifyKernelBinary 确认下载到的是 Linux 可执行文件，并且 "mihomo -v" 报出的版本与 tag 一致。
-func verifyKernelBinary(path, version string) error {
+// probeKernelBinary 确认是 Linux 可执行文件，并返回 "mihomo -v" 识别出的版本号。
+func probeKernelBinary(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return err
+		return "", err
 	}
 	magic := make([]byte, 4)
 	_, rerr := io.ReadFull(f, magic)
 	f.Close()
 	if rerr != nil || !bytes.Equal(magic, []byte{0x7f, 'E', 'L', 'F'}) {
-		return fmt.Errorf("下载的文件不是 Linux 可执行文件")
+		return "", fmt.Errorf("文件不是 Linux 可执行内核")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	out, runErr := exec.CommandContext(ctx, path, "-v").CombinedOutput()
 	text := string(out)
-	want := strings.TrimPrefix(version, "v")
-	if !strings.Contains(text, want) {
-		short := strings.TrimSpace(text)
-		if len(short) > 200 {
-			short = short[:200] + "…"
+	if v := kernelVersionOutputRE.FindString(text); v != "" {
+		return v, nil
+	}
+	short := strings.TrimSpace(text)
+	if len(short) > 200 {
+		short = short[:200] + "…"
+	}
+	if short == "" {
+		if runErr != nil {
+			short = runErr.Error()
+		} else {
+			short = "无输出"
 		}
-		if short == "" {
-			if runErr != nil {
-				short = runErr.Error()
-			} else {
-				short = "无输出"
-			}
-		}
-		return fmt.Errorf("内核自检失败（期望 %s，实际输出：%s）", version, short)
+	}
+	return "", fmt.Errorf("内核自检失败：无法从 mihomo -v 输出识别版本（%s）", short)
+}
+
+// verifyKernelBinary 确认下载/导入的内核版本与期望版本一致。
+func verifyKernelBinary(path, version string) error {
+	got, err := probeKernelBinary(path)
+	if err != nil {
+		return err
+	}
+	if got != version {
+		return fmt.Errorf("内核自检失败（期望 %s，实际 %s）", version, got)
 	}
 	return nil
 }
@@ -757,6 +793,8 @@ func (a *App) ensureKernelInstalled(tag string, size int64, wantSHA string) erro
 	}
 	return writeKernelMeta(a.Paths, &KernelMeta{
 		Version:     tag,
+		Label:       tag,
+		Source:      "online",
 		Asset:       linuxAssetName(tag),
 		Size:        sz,
 		SHA256:      sha,
@@ -765,17 +803,212 @@ func (a *App) ensureKernelInstalled(tag string, size int64, wantSHA string) erro
 	})
 }
 
+// ---------- 本地文件内核（飞牛文件选择器） ----------
+
+// openUserPickedKernelFile 校验并打开用户通过飞牛文件选择器授权的内核文件。
+// pickUserFile 已经把所选文件的访问权限授给当前应用，所以这里不再限制固定目录，
+// 只做绝对路径 / 常规文件 / 大小校验；能不能读由宿主授权和文件系统权限决定。
+func openUserPickedKernelFile(p string) (*os.File, string, os.FileInfo, error) {
+	if p == "" || !strings.HasPrefix(p, "/") {
+		return nil, "", nil, fmt.Errorf("文件路径无效")
+	}
+	clean := path.Clean(p)
+	if clean == "/" {
+		return nil, "", nil, fmt.Errorf("文件路径无效")
+	}
+	st, err := os.Stat(clean)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("无法读取文件：%v", err)
+	}
+	if !st.Mode().IsRegular() {
+		return nil, "", nil, fmt.Errorf("不是常规文件")
+	}
+	if st.Size() <= 0 || st.Size() > kernelMaxBinSize {
+		return nil, "", nil, fmt.Errorf("文件大小超出范围（需小于 %d MB）", kernelMaxBinSize>>20)
+	}
+	f, err := os.Open(clean)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("无法打开文件：%v", err)
+	}
+	return f, clean, st, nil
+}
+
+func localKernelKey() string {
+	// 必须匹配 kernelTagRE（后缀里不能再出现 "-"），同时保证多次导入不会撞目录。
+	return fmt.Sprintf("v0.0.0-local%d", time.Now().UnixNano())
+}
+
+// runKernelFileSwitch 从用户选择的文件安装内核：支持官方 .gz 压缩包或已解压的 mihomo 二进制。
+func (a *App) runKernelFileSwitch(src string) {
+	defer func() {
+		if r := recover(); r != nil {
+			a.kernelFail(fmt.Errorf("本地内核导入异常：%v", r))
+		}
+	}()
+
+	f, clean, st, err := openUserPickedKernelFile(src)
+	if err != nil {
+		a.kernelFail(err)
+		return
+	}
+	defer f.Close()
+
+	key := localKernelKey()
+	dir := filepath.Join(a.Paths.KernelDir(), key)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		a.kernelFail(err)
+		return
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.RemoveAll(dir)
+		}
+	}()
+
+	a.kernelSet(func(s *KernelStatus) {
+		s.Stage = "verifying"
+		s.Message = "正在读取本地内核…"
+		s.Total = st.Size()
+		s.Downloaded = 0
+	})
+
+	tmp, err := os.CreateTemp(dir, ".local-*")
+	if err != nil {
+		a.kernelFail(err)
+		return
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+
+	br := bufio.NewReader(f)
+	magic, _ := br.Peek(2)
+	var reader io.Reader = br
+	if len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
+		gz, gerr := gzip.NewReader(&kernelProgressReader{r: br, a: a})
+		if gerr != nil {
+			tmp.Close()
+			a.kernelFail(fmt.Errorf("压缩包无效：%v", gerr))
+			return
+		}
+		defer gz.Close()
+		reader = gz
+	} else {
+		reader = &kernelProgressReader{r: br, a: a}
+	}
+
+	n, err := io.Copy(tmp, io.LimitReader(reader, kernelMaxBinSize+1))
+	if err != nil {
+		tmp.Close()
+		a.kernelFail(err)
+		return
+	}
+	if n > kernelMaxBinSize {
+		tmp.Close()
+		a.kernelFail(fmt.Errorf("解压后超过大小上限"))
+		return
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		a.kernelFail(err)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		a.kernelFail(err)
+		return
+	}
+	if err := os.Chmod(tmpName, 0o755); err != nil {
+		a.kernelFail(err)
+		return
+	}
+
+	a.kernelSet(func(s *KernelStatus) {
+		s.Stage = "verifying"
+		s.Message = "正在校验并识别本地内核版本…"
+	})
+	detected, err := probeKernelBinary(tmpName)
+	if err != nil {
+		a.kernelFail(fmt.Errorf("本地内核自检失败：%v（请确认它与 NAS 架构 linux/%s 一致）", err, runtime.GOARCH))
+		return
+	}
+	sha, err := sha256File(tmpName)
+	if err != nil {
+		a.kernelFail(err)
+		return
+	}
+	dst := a.Paths.KernelBin(key)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		a.kernelFail(err)
+		return
+	}
+	if err := os.Rename(tmpName, dst); err != nil {
+		a.kernelFail(err)
+		return
+	}
+	fi, _ := os.Stat(dst)
+	var sz int64
+	if fi != nil {
+		sz = fi.Size()
+	}
+	if err := writeKernelMeta(a.Paths, &KernelMeta{
+		Version:     key,
+		Label:       detected,
+		Source:      "local",
+		Asset:       filepath.Base(clean),
+		Size:        sz,
+		SHA256:      sha,
+		InstalledAt: nowStr(),
+	}); err != nil {
+		a.kernelFail(err)
+		return
+	}
+	ok = true
+
+	a.kernelSet(func(s *KernelStatus) {
+		s.Stage = "activating"
+		s.Message = "正在切换并重启内核…"
+	})
+	if err := a.activateKernel(key, detected, "local"); err != nil {
+		a.kernelFail(err)
+		return
+	}
+	cleanupKernels(a.Paths, key)
+	a.kernelDone(detected)
+}
+
+// StartKernelFileSwitch 异步安装并启用用户从飞牛文件选择器挑的内核文件。
+func (a *App) StartKernelFileSwitch(p string) error {
+	f, _, _, err := openUserPickedKernelFile(p)
+	if err != nil {
+		return err
+	}
+	f.Close()
+	a.kMu.Lock()
+	if a.kSt.Busy {
+		a.kMu.Unlock()
+		return fmt.Errorf("已有内核切换任务正在进行中，请稍候")
+	}
+	a.kSt = KernelStatus{
+		Busy:    true,
+		Stage:   "queued",
+		Message: "正在读取本地内核…",
+	}
+	a.kSt.StartedAt = nowUnix()
+	a.kMu.Unlock()
+	go a.runKernelFileSwitch(p)
+	return nil
+}
+
 // ---------- 激活 / 回滚 ----------
 
 // activateKernel 写入选中版本；内核运行中则先停后启，新内核起不来就回滚旧版本。
-func (a *App) activateKernel(version string) error {
+func (a *App) activateKernel(version, label, source string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	old := loadKernelState(a.Paths)
-	oldVersion := ""
-	if old != nil {
-		oldVersion = old.Version
+	old := &KernelState{}
+	if cur := loadKernelState(a.Paths); cur != nil {
+		old = &KernelState{Version: cur.Version, Label: cur.Label, Source: cur.Source}
 	}
 	wasRunning := a.Mihomo.Running()
 	if wasRunning {
@@ -783,7 +1016,8 @@ func (a *App) activateKernel(version string) error {
 			return fmt.Errorf("停止内核失败：%w", err)
 		}
 	}
-	if err := saveKernelState(a.Paths, &KernelState{Version: version, UpdatedAt: nowStr()}); err != nil {
+	newState := &KernelState{Version: version, Label: label, Source: source, UpdatedAt: nowStr()}
+	if err := saveKernelState(a.Paths, newState); err != nil {
 		if wasRunning {
 			_ = a.Mihomo.Start(a.Paths.ConfigFile())
 		}
@@ -794,7 +1028,8 @@ func (a *App) activateKernel(version string) error {
 		return nil
 	}
 	if err := a.Mihomo.Start(a.Paths.ConfigFile()); err != nil {
-		_ = saveKernelState(a.Paths, &KernelState{Version: oldVersion, UpdatedAt: nowStr()})
+		old.UpdatedAt = nowStr()
+		_ = saveKernelState(a.Paths, old)
 		invalidateMihomoVersion()
 		if e2 := a.Mihomo.Start(a.Paths.ConfigFile()); e2 != nil {
 			return fmt.Errorf("新内核启动失败（%v），已回滚但原内核也未能启动：%v", err, e2)
@@ -895,18 +1130,23 @@ func (a *App) runKernelSwitch(version string) {
 		s.Stage = "activating"
 		s.Message = "正在切换并重启内核…"
 	})
-	if err := a.activateKernel(version); err != nil {
+	label, source := version, "online"
+	if version == "" {
+		label, source = "", "builtin"
+	}
+	if err := a.activateKernel(version, label, source); err != nil {
 		a.kernelFail(err)
 		return
 	}
 	cleanupKernels(a.Paths, version)
-	if version == "" {
-		version = mihomoBundled
-		if version == "" {
-			version = "随应用内置"
+	done := version
+	if done == "" {
+		done = mihomoBundled
+		if done == "" {
+			done = "随应用内置"
 		}
 	}
-	a.kernelDone(version)
+	a.kernelDone(done)
 }
 
 // ---------- HTTP 接口 ----------
@@ -957,6 +1197,7 @@ func (a *App) hMihomoReleases(w http.ResponseWriter, r *http.Request) {
 func (a *App) hMihomoSwitch(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Version string `json:"version"`
+		Path    string `json:"path"`
 		Builtin bool   `json:"builtin"`
 	}
 	b, _ := readBody(r, 1<<16)
@@ -967,6 +1208,19 @@ func (a *App) hMihomoSwitch(w http.ResponseWriter, r *http.Request) {
 	version := strings.TrimSpace(body.Version)
 	if body.Builtin {
 		version = ""
+	}
+	// 飞牛文件选择器挑的本地内核文件（官方 .gz 或已解压二进制）。
+	if p := strings.TrimSpace(body.Path); p != "" {
+		if version != "" || body.Builtin {
+			writeErr(w, 400, "path 不能与 version/builtin 同时使用")
+			return
+		}
+		if err := a.StartKernelFileSwitch(p); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		writeJSON(w, 202, map[string]any{"ok": true, "status": a.KernelStatus()})
+		return
 	}
 	if version != "" && !kernelTagRE.MatchString(version) {
 		writeErr(w, 400, "版本号格式不正确（只支持 Mihomo 官方 vX.Y.Z 版本）")

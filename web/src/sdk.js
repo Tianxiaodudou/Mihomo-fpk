@@ -50,6 +50,26 @@ export async function pickSubscriptionFile() {
   return pickByInput()
 }
 
+// 选择本地内核文件（官方 .gz 压缩包，或已解压的 mihomo 二进制）。
+// 宿主内同样走 pickUserFile：选择即把文件授权给当前应用，后端才能读取。
+// 不传 accept，避免把没有扩展名的 mihomo 二进制过滤掉。
+export async function pickKernelFile() {
+  if (!HOST_PICKER) {
+    throw new Error('需要在飞牛宿主内使用文件选择器（浏览器调试不支持本地内核导入）')
+  }
+  if (typeof trim.pickUserFile !== 'function') {
+    throw new Error('当前飞牛宿主版本不支持文件授权选择器，请升级系统后再试')
+  }
+  const params = {
+    multiple: false,
+    title: '选择 Mihomo 内核文件（.gz 或已解压二进制）'
+  }
+  const res = await trim.pickUserFile(params)
+  const paths = pickPathsFromResponse(res)
+  if (paths.length) return { path: paths[0] }
+  return null
+}
+
 function pickByInput() {
   return new Promise((resolve, reject) => {
     const input = document.createElement('input')

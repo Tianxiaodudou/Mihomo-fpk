@@ -2,6 +2,7 @@
 import { ref, computed, inject, onMounted, onUnmounted } from 'vue'
 import { api } from '../api'
 import { DONATE_WX, DONATE_ALI } from '../donate'
+import { pickKernelFile } from '../sdk'
 
 const notify = inject('notify')
 const loadStatus = inject('loadStatus')
@@ -33,10 +34,12 @@ const kInfo = ref({})
 const kStatus = ref({ busy: false })
 const kExpanded = ref({})
 const kManual = ref('')
+const kFileBusy = ref(false)
 let kTimer = null
 
 const kActive = computed(() => kInfo.value.active || info.value.mihomo || '')
 const kSource = computed(() => kInfo.value.source || info.value.mihomo_source || 'builtin')
+const kSourceLabel = computed(() => (kSource.value === 'local' ? '本地文件' : (kSource.value === 'online' ? '在线下载' : '随应用内置')))
 const kGoarch = computed(() => kInfo.value.goarch || '')
 const kShowList = computed(() => {
   const arch = kGoarch.value
@@ -57,7 +60,7 @@ const kStatusText = computed(() => {
   if (s.error) return '切换失败：' + s.error
   if (!s.busy) return s.stage === 'done' ? (s.message || '已切换完成') : ''
   const map = { queued: '准备中…', downloading: '正在下载内核…', verifying: '正在校验内核…', activating: '正在重启内核…' }
-  return map[s.stage] || s.message || '处理中…'
+  return s.message || map[s.stage] || '处理中…'
 })
 
 function fmtKTime(v) {
@@ -160,6 +163,38 @@ async function manualSwitch() {
     return
   }
   await doSwitch({ tag: v, downloaded: false, size: 0 })
+}
+function sourceLabel(s) {
+  if (s === 'local') return '本地文件'
+  if (s === 'online') return '在线下载'
+  return '随应用内置'
+}
+// 本地文件的版本号可能和某个官方 tag 相同，但并不是「从官方仓库安装的」，
+// 因此只有来源为 online 时才把列表项标成当前使用，避免挡住切回同版本官方内核。
+function isActiveRelease(rel) {
+  return kSource.value === 'online' && rel.tag === kActive.value
+}
+async function pickLocalKernel() {
+  if (kStatus.value && kStatus.value.busy) { notify('已有切换任务在进行中', true); return }
+  kFileBusy.value = true
+  let picked = null
+  try {
+    picked = await pickKernelFile()
+  } catch (e) {
+    notify(e.message, true)
+    return
+  } finally {
+    kFileBusy.value = false
+  }
+  if (!picked || !picked.path) return // 用户取消
+  kStatus.value = { busy: true, stage: 'queued', message: '正在读取本地内核…' }
+  try {
+    await api.post('/api/mihomo/switch', { path: picked.path })
+    startKernelPoll()
+  } catch (e) {
+    kStatus.value = { busy: false, stage: 'error', error: e.message }
+    notify(e.message, true)
+  }
 }
 async function restoreBuiltin() {
   if (kStatus.value && kStatus.value.busy) { notify('已有切换任务在进行中', true); return }
@@ -477,10 +512,10 @@ onMounted(load)
           <th>内核版本</th>
           <td>
             <span class="mono" id="kernelVerCell">{{ info.mihomo || '未知' }}</span>
-            <span class="badge" :class="info.mihomo_source === 'online' ? 'on' : 'off'" style="margin-left:8px">
-              {{ info.mihomo_source === 'online' ? '在线下载' : '随应用内置' }}
+            <span class="badge" :class="info.mihomo_source === 'builtin' ? 'off' : 'on'" style="margin-left:8px">
+              {{ sourceLabel(info.mihomo_source) }}
             </span>
-            <span class="muted" v-if="info.mihomo_source === 'online'">（内置 {{ info.mihomo_bundled || '—' }}）</span>
+            <span class="muted" v-if="info.mihomo_source !== 'builtin'">（内置 {{ info.mihomo_bundled || '—' }}）</span>
             <button class="sm primary" id="switchKernelBtn" style="margin-left:10px" @click="openKernel">切换版本</button>
           </td>
         </tr>
@@ -576,8 +611,8 @@ onMounted(load)
             <h2>切换 Mihomo 内核版本</h2>
             <div class="muted k-sub">
               当前：<b class="mono">{{ kActive || '未知' }}</b>
-              <span class="badge" :class="kSource === 'online' ? 'on' : 'off'">{{ kSource === 'online' ? '在线下载' : '随应用内置' }}</span>
-              <span class="muted" v-if="kSource === 'online'">（内置 {{ kInfo.bundled || '—' }}）</span>
+              <span class="badge" :class="kSource === 'builtin' ? 'off' : 'on'">{{ kSourceLabel }}</span>
+              <span class="muted" v-if="kSource !== 'builtin'">（内置 {{ kInfo.bundled || '—' }}）</span>
               <span class="badge off" v-if="kGoarch" title="只显示本机 CPU 架构可用的内核">linux/{{ kGoarch }}</span>
             </div>
           </div>
@@ -600,11 +635,21 @@ onMounted(load)
             </div>
             <div class="k-actions">
               <label class="k-check"><input type="checkbox" v-model="kShowPre" /> 显示预发布</label>
+              <button class="sm" :disabled="kStatus.busy || kFileBusy" title="用飞牛文件管理器选择 NAS 上的内核文件" @click="pickLocalKernel">{{ kFileBusy ? '选择中…' : '从文件选择' }}</button>
               <button class="sm" :disabled="kLoading" @click="loadReleases(true)">{{ kLoading ? '刷新中…' : '刷新列表' }}</button>
             </div>
           </div>
 
+          <div class="muted" style="margin-top:8px">
+            也可以点「<span class="kw kw-act">从文件选择</span>」，用飞牛文件管理器挑 NAS 上自己下载的内核 ——
+            官方 <span class="kw kw-val">.gz</span> 压缩包或已解压的 <span class="kw kw-val">mihomo</span> 二进制都可以，
+            会自动识别版本并校验。
+          </div>
+
           <div class="notice" v-if="kWarning" style="margin-top:10px">{{ kWarning }}</div>
+          <div class="notice" v-if="kSource === 'local'" style="margin-top:10px">
+            当前使用的是 <b>本地文件内核</b>（{{ kActive }}）。下面是从官方仓库在线下载的其他版本，也可以重新点「从文件选择」换一个本地内核。
+          </div>
           <div class="errbox" v-if="kError" style="margin-top:10px">{{ kError }}</div>
 
           <div class="k-manual" v-if="kError">
@@ -618,18 +663,18 @@ onMounted(load)
           <div class="k-list">
             <div v-if="kLoading && !kReleases.length" class="empty">正在获取 Mihomo 官方版本列表…</div>
             <div v-else-if="!kShowList.length && !kError" class="empty">没有适用于 linux/{{ kGoarch || '当前架构' }} 的可用版本</div>
-            <div v-for="rel in kShowList" :key="rel.tag" class="k-rel" :class="{ active: rel.tag === kActive }">
+            <div v-for="rel in kShowList" :key="rel.tag" class="k-rel" :class="{ active: isActiveRelease(rel) }">
               <div class="k-rel-top">
                 <div class="k-rel-name">
                   <b class="mono">{{ rel.tag }}</b>
-                  <span class="badge on" v-if="rel.tag === kActive">当前使用</span>
+                  <span class="badge on" v-if="isActiveRelease(rel)">当前使用</span>
                   <span class="badge warn" v-if="rel.prerelease">预发布</span>
-                  <span class="badge fast" v-if="rel.downloaded && rel.tag !== kActive">已下载</span>
+                  <span class="badge fast" v-if="rel.downloaded && !isActiveRelease(rel)">已下载</span>
                 </div>
                 <div class="k-rel-act">
                   <span class="muted" v-if="rel.size">{{ fmtKSize(rel.size) }}</span>
-                  <button class="primary sm" :disabled="kStatus.busy || rel.tag === kActive" @click="doSwitch(rel)">
-                    {{ rel.tag === kActive ? '使用中' : (rel.downloaded ? '使用此版本' : '下载并使用') }}
+                  <button class="primary sm" :disabled="kStatus.busy || isActiveRelease(rel)" @click="doSwitch(rel)">
+                    {{ isActiveRelease(rel) ? '使用中' : (rel.downloaded ? '使用此版本' : '下载并使用') }}
                   </button>
                 </div>
               </div>
@@ -652,7 +697,7 @@ onMounted(load)
             下载的内核保存在应用私有目录，<span class="kw kw-ok">升级应用不会丢失</span>；只保留最近 2 个历史版本。
             <span v-if="kFetchedAt">列表更新于 {{ fmtKTime(kFetchedAt * 1000) }}。</span>
           </div>
-          <button class="sm" v-if="kSource === 'online'" :disabled="kStatus.busy" @click="restoreBuiltin">恢复内置版本</button>
+          <button class="sm" v-if="kSource !== 'builtin'" :disabled="kStatus.busy" @click="restoreBuiltin">恢复内置版本</button>
         </div>
       </div>
     </div>
